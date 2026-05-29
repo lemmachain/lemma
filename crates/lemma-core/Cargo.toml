@@ -1,0 +1,13 @@
+[package]
+name = "lemma-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core types for the Lemma blockchain (Address, Hash, Block, Transaction)"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+blake3 = { workspace = true }
+bech32 = { workspace = true }

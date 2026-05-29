@@ -1,0 +1,29 @@
+# Rust
+target/
+*.rs.bk
+
+# Environment & Secrets
+.env
+.env.*
+*.pem
+*.key
+*.secret
+credentials.json
+secrets.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/settings.json
+.vscode/launch.json
+*.swp
+*.swo
+*~
+
+# Temp
+.tmp/
+*.tmp
+*.log
