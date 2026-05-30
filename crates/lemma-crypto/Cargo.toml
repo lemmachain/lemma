@@ -1,0 +1,11 @@
+[package]
+name = "lemma-crypto"
+version = "0.1.0"
+edition = "2021"
+description = "Cryptographic primitives for Lemma: Ed25519, Dilithium, Blake3, address derivation"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+blake3 = { workspace = true }
+lemma-core = { path = "../lemma-core" }

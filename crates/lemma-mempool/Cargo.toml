@@ -1,0 +1,11 @@
+[package]
+name = "lemma-mempool"
+version = "0.1.0"
+edition = "2021"
+description = "Transaction mempool for Lemma: priority queue, validation, rate limiting, Express fast path"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+lemma-core = { path = "../lemma-core" }

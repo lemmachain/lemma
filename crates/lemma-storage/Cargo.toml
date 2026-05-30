@@ -1,0 +1,11 @@
+[package]
+name = "lemma-storage"
+version = "0.1.0"
+edition = "2021"
+description = "Persistent storage for Lemma: RocksDB wrapper, Merkle Patricia Trie, world state"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+bincode = { workspace = true }
+lemma-core = { path = "../lemma-core" }

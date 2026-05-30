@@ -17,15 +17,23 @@ fn hash_invalid_length() -> HashError {
 }
 
 fn amount_overflow() -> AmountError {
-    AmountError::Overflow { lhs: u128::MAX, rhs: 1 }
+    AmountError::Overflow {
+        lhs: u128::MAX,
+        rhs: 1,
+    }
 }
 
 fn block_gas_exceeded() -> BlockError {
-    BlockError::GasExceeded { used: 1_000_000, limit: 500_000 }
+    BlockError::GasExceeded {
+        used: 1_000_000,
+        limit: 500_000,
+    }
 }
 
 fn ser_binary_error() -> SerializationError {
-    SerializationError::Binary { reason: "eof".to_string() }
+    SerializationError::Binary {
+        reason: "eof".to_string(),
+    }
 }
 
 // ── AddressError — Display ────────────────────────────────────────────────────
@@ -40,13 +48,17 @@ fn address_error_displays_invalid_length() {
 
 #[test]
 fn address_error_displays_invalid_bech32() {
-    let err = AddressError::InvalidBech32 { reason: "bad checksum".to_string() };
+    let err = AddressError::InvalidBech32 {
+        reason: "bad checksum".to_string(),
+    };
     assert_eq!(err.to_string(), "invalid Bech32m encoding: bad checksum");
 }
 
 #[test]
 fn address_error_displays_invalid_hrp() {
-    let err = AddressError::InvalidHrp { got: "eth".to_string() };
+    let err = AddressError::InvalidHrp {
+        got: "eth".to_string(),
+    };
     assert_eq!(
         err.to_string(),
         "invalid HRP: expected one of [lem, tlem, dlem], got \"eth\"",
@@ -102,7 +114,9 @@ fn hash_error_displays_invalid_length() {
 
 #[test]
 fn hash_error_displays_invalid_hex() {
-    let err = HashError::InvalidHex { reason: "invalid char 'g'".to_string() };
+    let err = HashError::InvalidHex {
+        reason: "invalid char 'g'".to_string(),
+    };
     assert_eq!(err.to_string(), "invalid hex encoding: invalid char 'g'");
 }
 
@@ -117,7 +131,9 @@ fn hash_error_clones_equal_to_original() {
 #[test]
 fn hash_error_different_variants_are_not_equal() {
     let a = HashError::InvalidLength { got: 16 };
-    let b = HashError::InvalidHex { reason: "bad".to_string() };
+    let b = HashError::InvalidHex {
+        reason: "bad".to_string(),
+    };
     assert_ne!(a, b);
 }
 
@@ -134,7 +150,10 @@ fn amount_error_displays_overflow_with_operands() {
 #[test]
 fn amount_error_displays_underflow_with_operands() {
     let err = AmountError::Underflow { lhs: 5, rhs: 10 };
-    assert_eq!(err.to_string(), "amount underflow: 5 - 10 would be negative");
+    assert_eq!(
+        err.to_string(),
+        "amount underflow: 5 - 10 would be negative"
+    );
 }
 
 #[test]
@@ -169,7 +188,9 @@ fn amount_error_different_variants_are_not_equal() {
 
 #[test]
 fn transaction_error_displays_missing_recipient() {
-    let err = TransactionError::MissingRecipient { tx_type: "Transfer".to_string() };
+    let err = TransactionError::MissingRecipient {
+        tx_type: "Transfer".to_string(),
+    };
     assert_eq!(
         err.to_string(),
         "transaction of type Transfer requires a recipient address",
@@ -186,7 +207,9 @@ fn transaction_error_displays_unexpected_recipient() {
 
 #[test]
 fn transaction_error_displays_missing_calldata() {
-    let err = TransactionError::MissingCalldata { tx_type: "ContractCall".to_string() };
+    let err = TransactionError::MissingCalldata {
+        tx_type: "ContractCall".to_string(),
+    };
     assert_eq!(
         err.to_string(),
         "transaction of type ContractCall requires calldata",
@@ -217,7 +240,10 @@ fn transaction_error_displays_hash_mismatch_with_both_hashes() {
 
 #[test]
 fn block_error_displays_invalid_height() {
-    let err = BlockError::InvalidHeight { expected: 42, got: 99 };
+    let err = BlockError::InvalidHeight {
+        expected: 42,
+        got: 99,
+    };
     assert_eq!(err.to_string(), "invalid block height: expected 42, got 99");
 }
 
@@ -231,7 +257,10 @@ fn block_error_displays_gas_exceeded() {
 
 #[test]
 fn block_error_displays_receipt_count_mismatch() {
-    let err = BlockError::ReceiptCountMismatch { transactions: 5, receipts: 3 };
+    let err = BlockError::ReceiptCountMismatch {
+        transactions: 5,
+        receipts: 3,
+    };
     assert_eq!(
         err.to_string(),
         "receipt count (3) does not match transaction count (5)",
@@ -242,7 +271,10 @@ fn block_error_displays_receipt_count_mismatch() {
 fn block_error_receipt_count_mismatch_with_equal_counts_is_constructable() {
     // Boundary: equal counts should still produce a valid (if logically odd) error.
     // The caller is responsible for not emitting this error when counts match.
-    let err = BlockError::ReceiptCountMismatch { transactions: 3, receipts: 3 };
+    let err = BlockError::ReceiptCountMismatch {
+        transactions: 3,
+        receipts: 3,
+    };
     assert_eq!(
         err.to_string(),
         "receipt count (3) does not match transaction count (3)",
@@ -253,16 +285,18 @@ fn block_error_receipt_count_mismatch_with_equal_counts_is_constructable() {
 
 #[test]
 fn serialization_error_displays_json_with_reason() {
-    let err = SerializationError::Json { reason: "missing field `hash`".to_string() };
-    assert_eq!(err.to_string(), "JSON serialization error: missing field `hash`");
+    let err = SerializationError::Json {
+        reason: "missing field `hash`".to_string(),
+    };
+    assert_eq!(
+        err.to_string(),
+        "JSON serialization error: missing field `hash`"
+    );
 }
 
 #[test]
 fn serialization_error_displays_binary_with_reason() {
-    assert_eq!(
-        ser_binary_error().to_string(),
-        "binary codec error: eof",
-    );
+    assert_eq!(ser_binary_error().to_string(), "binary codec error: eof",);
 }
 
 #[test]
@@ -306,8 +340,14 @@ fn block_error_clones_equal_to_original() {
 
 #[test]
 fn block_error_different_variants_are_not_equal() {
-    let a = BlockError::GasExceeded { used: 100, limit: 50 };
-    let b = BlockError::InvalidHeight { expected: 1, got: 2 };
+    let a = BlockError::GasExceeded {
+        used: 100,
+        limit: 50,
+    };
+    let b = BlockError::InvalidHeight {
+        expected: 1,
+        got: 2,
+    };
     assert_ne!(a, b);
 }
 

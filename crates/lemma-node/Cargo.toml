@@ -1,0 +1,17 @@
+[package]
+name = "lemma-node"
+version = "0.1.0"
+edition = "2021"
+description = "Lemma full node binary: boots, produces blocks, syncs via P2P"
+
+[[bin]]
+name = "lemma-node"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+lemma-core = { path = "../lemma-core" }

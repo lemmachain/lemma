@@ -1,0 +1,11 @@
+[package]
+name = "lemma-network"
+version = "0.1.0"
+edition = "2021"
+description = "P2P networking for Lemma: libp2p, gossipsub, peer discovery, block sync"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+lemma-core = { path = "../lemma-core" }

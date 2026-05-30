@@ -1,0 +1,12 @@
+[package]
+name = "lemma-rpc"
+version = "0.1.0"
+edition = "2021"
+description = "JSON-RPC and WebSocket server for Lemma: lem_* methods, subscriptions"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+lemma-core = { path = "../lemma-core" }

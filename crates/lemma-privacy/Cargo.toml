@@ -1,0 +1,10 @@
+[package]
+name = "lemma-privacy"
+version = "0.1.0"
+edition = "2021"
+description = "Veil privacy layer: ZK shielded pool, spend/output circuits, nullifiers, note commitments"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+lemma-core = { path = "../lemma-core" }

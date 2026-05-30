@@ -41,7 +41,7 @@ pub enum AddressError {
 
     /// The leading type byte in the decoded data was not a known [`AddressType`](crate::AddressType).
     ///
-    /// Known values: `0x00` (Regular), `0x02` (Contract), `0x04` (Shielded).
+    /// Known values: `0x00` (Regular), `0xC0` (Contract), `0x10` (Shielded), `0x6E` (Burn).
     #[error("unknown address type byte: 0x{byte:02x}")]
     UnknownAddressType { byte: u8 },
 
@@ -94,7 +94,8 @@ pub enum AmountError {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum TransactionError {
     /// A `ContractCall` or `Transfer` transaction had no `to` address.
-    // TODO(lemmachain): replace tx_type: String with TxType (defined in transaction.rs) — issue #TBD
+    // TODO(lemmachain): replace tx_type: String with TxType once the circular-import path is
+    // resolved (TransactionError → TxType → error). Track: issue #1.
     #[error("transaction of type {tx_type} requires a recipient address")]
     MissingRecipient { tx_type: String },
 
@@ -103,7 +104,8 @@ pub enum TransactionError {
     UnexpectedRecipient,
 
     /// The transaction had no calldata but the type requires it.
-    // TODO(lemmachain): replace tx_type: String with TxType (defined in transaction.rs) — issue #TBD
+    // TODO(lemmachain): replace tx_type: String with TxType — same circular-import issue as
+    // MissingRecipient above. Track: issue #1.
     #[error("transaction of type {tx_type} requires calldata")]
     MissingCalldata { tx_type: String },
 
@@ -115,7 +117,7 @@ pub enum TransactionError {
     ///
     /// Stored as hex strings so this variant remains `Clone + PartialEq + Eq`
     /// until the `Hash` newtype is available.
-    // TODO(lemmachain): upgrade stored/computed to Hash once hash.rs is wired — issue #TBD
+    // TODO(lemmachain): upgrade stored/computed to Hash once hash.rs is wired. Track: issue #2.
     #[error("transaction hash mismatch: stored {stored}, computed {computed}")]
     HashMismatch { stored: String, computed: String },
 }
@@ -126,6 +128,13 @@ pub enum TransactionError {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum BlockError {
+    /// `gas_limit` was zero, which is always invalid.
+    ///
+    /// A zero `gas_limit` makes the block unable to include any transaction and
+    /// causes division-by-zero in the Burn Fee Model target calculation.
+    #[error("gas limit must be greater than zero")]
+    GasLimitZero,
+
     /// The block height was invalid in context (e.g. not exactly parent + 1).
     #[error("invalid block height: expected {expected}, got {got}")]
     InvalidHeight { expected: u64, got: u64 },
@@ -136,7 +145,24 @@ pub enum BlockError {
 
     /// The receipt count did not match the transaction count.
     #[error("receipt count ({receipts}) does not match transaction count ({transactions})")]
-    ReceiptCountMismatch { transactions: usize, receipts: usize },
+    ReceiptCountMismatch {
+        transactions: usize,
+        receipts: usize,
+    },
+
+    /// `header.gas_used` does not equal the sum of all receipt `gas_used` values.
+    ///
+    /// A consistent block must have its header gas accounting match the actual
+    /// per-transaction gas consumed. A mismatch indicates a tampered or
+    /// incorrectly assembled block.
+    #[error(
+        "gas accounting mismatch: header claims {header_gas_used} gas used, \
+         but receipts sum to {receipts_gas_used}"
+    )]
+    GasAccountingMismatch {
+        header_gas_used: u64,
+        receipts_gas_used: u64,
+    },
 }
 
 // ─── Serialization ────────────────────────────────────────────────────────────
@@ -160,7 +186,9 @@ pub enum SerializationError {
 
 impl From<serde_json::Error> for SerializationError {
     fn from(e: serde_json::Error) -> Self {
-        Self::Json { reason: e.to_string() }
+        Self::Json {
+            reason: e.to_string(),
+        }
     }
 }
 

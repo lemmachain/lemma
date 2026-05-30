@@ -1,0 +1,11 @@
+[package]
+name = "lemma-consensus"
+version = "0.1.0"
+edition = "2021"
+description = "DAG consensus for Lemma: Surge (DA), Pulse (ordering), PoS validator set, Burn Fee Model"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+lemma-core = { path = "../lemma-core" }

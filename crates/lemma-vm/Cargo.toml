@@ -1,0 +1,10 @@
+[package]
+name = "lemma-vm"
+version = "0.1.0"
+edition = "2021"
+description = "LemmaVM: WASM execution, gas metering, host functions, Flux parallel execution"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+lemma-core = { path = "../lemma-core" }

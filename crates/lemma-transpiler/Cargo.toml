@@ -1,0 +1,10 @@
+[package]
+name = "lemma-transpiler"
+version = "0.1.0"
+edition = "2021"
+description = "Solidity-to-Lem transpiler: parse Solidity, emit equivalent Lem source"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+lemma-core = { path = "../lemma-core" }

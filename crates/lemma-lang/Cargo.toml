@@ -1,0 +1,10 @@
+[package]
+name = "lemma-lang"
+version = "0.1.0"
+edition = "2021"
+description = "Lem language: lexer, parser, type checker, safety analyzer (12 rules), WASM codegen"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+lemma-core = { path = "../lemma-core" }
