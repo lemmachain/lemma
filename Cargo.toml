@@ -59,11 +59,23 @@ libp2p = { version = "0.56", features = [
 # VM (fuel metering, OSS-Fuzz, formal verification — chosen over wasmer for metered execution)
 wasmtime = "45"
 
-# ZK (Veil — BLS12-377 + decaf377, Penumbra stack)
-ark-groth16 = "0.6"
-ark-bls12-377 = "0.6"
-ark-std = "0.5"
-ark-serialize = "0.5"
+# ZK (Veil — BLS12-377 + decaf377, Penumbra stack).
+# PINNED to arkworks 0.4.x to match Penumbra's audited circuits + trusted-setup
+# parameters (reuse requires byte-identical circuits + matching crate versions).
+# This is the ONE place Lemma intentionally pins below latest — circuit/param
+# compatibility overrides currency. See 10-PRIVACY_SPEC.md §3.
+ark-ec = { version = "=0.4.2", default-features = false }
+ark-ff = { version = "=0.4.2", default-features = false }
+ark-groth16 = { version = "=0.4.0", default-features = false }
+ark-r1cs-std = { version = "=0.4.0", default-features = false }
+ark-relations = "=0.4"
+ark-serialize = "=0.4.2"
+ark-snark = "=0.4.0"
+ark-std = { version = "=0.4", default-features = false }
+ark-bls12-377 = { version = "=0.4", default-features = false }
+decaf377 = { version = "=0.10.1", default-features = false }
+poseidon377 = "=1.2.0"
+decaf377-rdsa = "=0.11.0"
 
 # RPC
 axum = "0.7"
