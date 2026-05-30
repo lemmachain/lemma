@@ -110,7 +110,7 @@ impl<'a> TxSigningBody<'a> {
 /// use lemma_core::{Address, Amount, Hash, Signature, transaction::{Transaction, TxType}};
 ///
 /// let tx = Transaction::new(
-///     Hash::zero(), Address::zero(), None, 0, 0,
+///     Hash::zero(), Address::zero(), Some(Address::zero()), 0, 0,
 ///     Amount::zero(), 1_000_000, Amount::from_drop(1_000_000_000),
 ///     TxType::Transfer, vec![], Signature::Unsigned,
 /// ).unwrap();
@@ -145,7 +145,7 @@ pub fn compute_tx_hash(tx: &Transaction) -> Result<Hash, CryptoError> {
 ///
 /// let kp = KeyPair::generate().unwrap();
 /// let mut tx = Transaction::new(
-///     Hash::zero(), *kp.address(), None, 0, 1,
+///     Hash::zero(), *kp.address(), Some(Address::zero()), 0, 1,
 ///     Amount::zero(), 1_000_000, Amount::from_drop(1_000_000_000),
 ///     TxType::Transfer, vec![], Signature::Unsigned,
 /// ).unwrap();
@@ -205,7 +205,7 @@ pub fn sign_transaction(tx: &mut Transaction, keypair: &KeyPair) -> Result<(), C
 /// # // setup omitted
 /// # let kp = KeyPair::generate().unwrap();
 /// # use lemma_core::{Address, Amount, Hash, Signature, transaction::{Transaction, TxType}};
-/// # let mut tx = Transaction::new(Hash::zero(), *kp.address(), None, 0, 1, Amount::zero(),
+/// # let mut tx = Transaction::new(Hash::zero(), *kp.address(), Some(Address::zero()), 0, 1, Amount::zero(),
 /// #     1_000_000, Amount::from_drop(1_000_000_000), TxType::Transfer, vec![], Signature::Unsigned).unwrap();
 /// sign_transaction(&mut tx, &kp).unwrap();
 /// assert!(verify_transaction(&tx, &kp.public_key()).is_ok());
