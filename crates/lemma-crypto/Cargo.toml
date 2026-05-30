@@ -5,7 +5,13 @@ edition = "2021"
 description = "Cryptographic primitives for Lemma: Ed25519, Dilithium, Blake3, address derivation"
 
 [dependencies]
+lemma-core = { path = "../lemma-core" }
 serde = { workspace = true }
 thiserror = { workspace = true }
 blake3 = { workspace = true }
-lemma-core = { path = "../lemma-core" }
+bincode = { workspace = true }
+rand = { workspace = true }
+ed25519-dalek = { workspace = true }
+pqcrypto-dilithium = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }

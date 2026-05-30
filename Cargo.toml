@@ -36,11 +36,33 @@ thiserror = "1"
 # Cryptography & encoding
 blake3 = "1"
 bech32 = "0.11"
+ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
+pqcrypto-dilithium = "0.5"
+sha2 = "0.10"
+subtle = "2"
 
 # Utilities
 bytes = "1"
 hex = "0.4"
-rand = "0.8"
+rand = "0.8.6"
+
+# Storage
+rocksdb = "0.22"
+
+# Networking
+libp2p = { version = "0.54", features = [
+    "tokio", "tcp", "noise", "yamux", "gossipsub",
+    "kad", "identify", "mdns", "ping",
+] }
+
+# VM
+wasmer = "4"
+
+# RPC
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors"] }
+tokio-tungstenite = "0.23"
+async-graphql = "7"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
