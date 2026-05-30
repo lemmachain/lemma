@@ -162,6 +162,7 @@ impl Log {
 ///     Address::burn(),
 ///     Some(Address::burn()),
 ///     0,
+///     1,
 ///     Amount::zero(),
 ///     21_000,
 ///     Amount::from_drop(1_000_000_000),
@@ -186,6 +187,13 @@ pub struct Transaction {
     pub to: Option<Address>,
     /// Sender nonce — must equal the on-chain account nonce at inclusion time.
     pub nonce: u64,
+    /// Network identifier this transaction is bound to (replay protection).
+    ///
+    /// Must match the chain's `GenesisConfig::chain_id`. A transaction signed for
+    /// one network (e.g. testnet) cannot be replayed on another. Bound into the
+    /// signed body by `lemma-crypto`. See docs/11-MEMPOOL_SHIELD_SPEC §1 (mempool
+    /// validates this at ingress) and docs/13-VALIDATOR_EPOCH_SPEC §5.2.
+    pub chain_id: u64,
     /// Native LEM value transferred with this transaction (in Drop).
     pub value: Amount,
     /// Maximum gas units the sender is willing to spend.
@@ -218,7 +226,7 @@ impl Transaction {
     /// - [`TransactionError::UnexpectedRecipient`] — `ContractDeploy` has a `to`.
     /// - [`TransactionError::MissingCalldata`] — type requires `data` but it is empty.
     //
-    // `too_many_arguments`: `Transaction` is a primitive blockchain type. All 10 fields
+    // `too_many_arguments`: `Transaction` is a primitive blockchain type. All 11 fields
     // are distinct, required, and cannot be grouped without introducing premature
     // abstraction. A builder pattern would add complexity with no structural benefit
     // for a single constructor call site.
@@ -228,6 +236,7 @@ impl Transaction {
         sender: Address,
         to: Option<Address>,
         nonce: u64,
+        chain_id: u64,
         value: Amount,
         gas_limit: u64,
         gas_price: Amount,
@@ -240,6 +249,7 @@ impl Transaction {
             sender,
             to,
             nonce,
+            chain_id,
             value,
             gas_limit,
             gas_price,

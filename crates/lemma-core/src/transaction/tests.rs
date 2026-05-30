@@ -55,6 +55,7 @@ fn transfer_tx() -> Transaction {
         sender(),
         Some(recipient()),
         0,
+        1,
         Amount::zero(),
         21_000,
         gas_price(),
@@ -72,6 +73,7 @@ fn deploy_tx() -> Transaction {
         sender(),
         None,
         0,
+        1,
         Amount::zero(),
         100_000,
         gas_price(),
@@ -88,6 +90,7 @@ fn call_tx() -> Transaction {
         tx_hash(),
         sender(),
         Some(recipient()),
+        1,
         1,
         Amount::zero(),
         50_000,
@@ -106,6 +109,7 @@ fn stake_tx() -> Transaction {
         sender(),
         Some(recipient()),
         0,
+        1,
         Amount::from_drop(100_000),
         21_000,
         gas_price(),
@@ -122,6 +126,7 @@ fn unstake_tx() -> Transaction {
         tx_hash(),
         sender(),
         Some(recipient()),
+        1,
         1,
         Amount::from_drop(50_000),
         21_000,
@@ -406,6 +411,7 @@ fn transaction_new_rejects_zero_gas_limit() {
         sender(),
         Some(recipient()),
         0,
+        1,
         Amount::zero(),
         0, // invalid
         gas_price(),
@@ -423,6 +429,7 @@ fn transaction_new_transfer_without_to_returns_missing_recipient() {
         sender(),
         None, // Transfer requires to
         0,
+        1,
         Amount::zero(),
         21_000,
         gas_price(),
@@ -443,6 +450,7 @@ fn transaction_new_contract_call_without_to_returns_missing_recipient() {
         sender(),
         None,
         0,
+        1,
         Amount::zero(),
         50_000,
         gas_price(),
@@ -463,6 +471,7 @@ fn transaction_new_contract_deploy_with_to_returns_unexpected_recipient() {
         sender(),
         Some(recipient()), // ContractDeploy must have no `to`
         0,
+        1,
         Amount::zero(),
         100_000,
         gas_price(),
@@ -480,6 +489,7 @@ fn transaction_new_contract_call_without_data_returns_missing_calldata() {
         sender(),
         Some(recipient()),
         0,
+        1,
         Amount::zero(),
         50_000,
         gas_price(),
@@ -500,6 +510,7 @@ fn transaction_new_contract_deploy_without_data_returns_missing_calldata() {
         sender(),
         None,
         0,
+        1,
         Amount::zero(),
         100_000,
         gas_price(),
@@ -524,6 +535,7 @@ fn transaction_validate_rejects_zero_gas_limit_on_deserialized_transaction() {
         sender: sender(),
         to: Some(recipient()),
         nonce: 0,
+        chain_id: 1,
         value: Amount::zero(),
         gas_limit: 0, // tampered field
         gas_price: gas_price(),
@@ -541,6 +553,7 @@ fn transaction_validate_rejects_missing_recipient_on_deserialized_transaction() 
         sender: sender(),
         to: None, // tampered: Transfer requires a recipient
         nonce: 0,
+        chain_id: 1,
         value: Amount::zero(),
         gas_limit: 21_000,
         gas_price: gas_price(),
@@ -561,6 +574,7 @@ fn transaction_validate_rejects_unexpected_recipient_on_deserialized_transaction
         sender: sender(),
         to: Some(recipient()), // tampered: ContractDeploy must not have `to`
         nonce: 0,
+        chain_id: 1,
         value: Amount::zero(),
         gas_limit: 100_000,
         gas_price: gas_price(),
@@ -593,6 +607,7 @@ fn transaction_is_signed_true_for_post_quantum_signature() {
         sender(),
         Some(recipient()),
         0,
+        1,
         Amount::zero(),
         21_000,
         gas_price(),
@@ -611,6 +626,7 @@ fn transaction_is_signed_true_for_hybrid_signature() {
         sender(),
         Some(recipient()),
         0,
+        1,
         Amount::zero(),
         21_000,
         gas_price(),
@@ -684,6 +700,69 @@ fn transaction_call_roundtrips_through_json() {
     assert_eq!(decoded, original);
 }
 
+// ── Transaction — chain_id ───────────────────────────────────────────────────
+
+#[test]
+fn transaction_new_stores_chain_id() {
+    let tx = Transaction::new(
+        tx_hash(),
+        sender(),
+        Some(recipient()),
+        0,
+        42, // chain_id under test
+        Amount::zero(),
+        21_000,
+        gas_price(),
+        TxType::Transfer,
+        vec![],
+        Signature::Unsigned,
+    )
+    .unwrap();
+    assert_eq!(tx.chain_id, 42);
+}
+
+#[test]
+fn transaction_chain_id_survives_json_roundtrip() {
+    let original = Transaction::new(
+        tx_hash(),
+        sender(),
+        Some(recipient()),
+        0,
+        7, // distinctive chain_id
+        Amount::zero(),
+        21_000,
+        gas_price(),
+        TxType::Transfer,
+        vec![],
+        Signature::Unsigned,
+    )
+    .unwrap();
+    let json = serde_json::to_string(&original).unwrap();
+    let decoded: Transaction = serde_json::from_str(&json).unwrap();
+    assert_eq!(decoded, original);
+    assert_eq!(decoded.chain_id, 7);
+}
+
+#[test]
+fn transactions_with_different_chain_ids_are_not_equal() {
+    let mainnet = transfer_tx(); // chain_id 1
+    let testnet = Transaction::new(
+        tx_hash(),
+        sender(),
+        Some(recipient()),
+        0,
+        2, // different chain_id
+        Amount::zero(),
+        21_000,
+        gas_price(),
+        TxType::Transfer,
+        vec![],
+        Signature::Unsigned,
+    )
+    .unwrap();
+    assert_ne!(mainnet, testnet);
+}
+
 // ── Transaction — Clone / PartialEq ──────────────────────────────────────────
 
 #[test]
@@ -700,6 +779,7 @@ fn transactions_with_different_nonces_are_not_equal() {
         sender(),
         Some(recipient()),
         99, // different nonce
+        1,
         Amount::zero(),
         21_000,
         gas_price(),

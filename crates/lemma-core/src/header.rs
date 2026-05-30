@@ -29,9 +29,11 @@ use crate::{address::Address, amount::Amount, error::BlockError, hash::Hash};
 ///
 /// # Genesis block
 ///
-/// The genesis header has `height = 0`, `parent_hash = Hash::zero()`, and
-/// `gas_used = 0`. The `base_fee` for block 1 is the protocol-defined initial
-/// value from [`GenesisConfig`](crate::GenesisConfig).
+/// The genesis header has `height = 0`, `parent_hash = Hash::zero()`,
+/// `gas_used = 0`, `epoch = 0`, `dag_round = 0`, and `dag_anchor` /
+/// `validators_hash` / `next_validators_hash` all `Hash::zero()`. The `base_fee`
+/// for block 1 is the protocol-defined initial value from
+/// [`GenesisConfig`](crate::GenesisConfig).
 ///
 /// # Examples
 ///
@@ -46,6 +48,11 @@ use crate::{address::Address, amount::Amount, error::BlockError, hash::Hash};
 ///     Hash::zero(),
 ///     Hash::zero(),
 ///     Address::zero(),
+///     0,
+///     0,
+///     Hash::zero(),
+///     Hash::zero(),
+///     Hash::zero(),
 ///     30_000_000,
 ///     0,
 ///     Amount::from_drop(1_000_000_000),
@@ -80,6 +87,31 @@ pub struct BlockHeader {
     ///
     /// `Address::zero()` for the genesis block (no proposer).
     pub proposer: Address,
+    /// Epoch number this block belongs to (validator-set era).
+    ///
+    /// The committee is fixed for an epoch; this links the block to the
+    /// `ValidatorSet` that may sign it. See docs/13-VALIDATOR_EPOCH_SPEC §4.4.
+    pub epoch: u64,
+    /// DAG round of the consensus commit that produced this block.
+    ///
+    /// The committed leader's anchor round (the `Commit`'s index) — lets light
+    /// clients and explorers verify consensus provenance. See docs/07-CONSENSUS_SPEC §5.2.
+    pub dag_round: u64,
+    /// Digest of the DAG anchor (committed leader) for this block.
+    ///
+    /// `Hash::zero()` for the genesis block. See docs/07-CONSENSUS_SPEC §5.2.
+    pub dag_anchor: Hash,
+    /// Hash of the validator set (committee) that is authorized to sign this block.
+    ///
+    /// Authenticates the current committee for light-client quorum-cert
+    /// verification. See docs/13-VALIDATOR_EPOCH_SPEC §4.4 and docs/12-NETWORK_SYNC_SPEC §3.
+    pub validators_hash: Hash,
+    /// Hash of the NEXT epoch's validator set, authorized by this block.
+    ///
+    /// On an end-of-epoch boundary block this commits the next committee, forming
+    /// the epoch-change proof light clients walk. Equals `validators_hash` within
+    /// an epoch. See docs/13-VALIDATOR_EPOCH_SPEC §4.4.
+    pub next_validators_hash: Hash,
     /// Maximum total gas units this block may consume.
     ///
     /// Must be > 0. Adjusted per block by the Burn Fee Model to target 50%
@@ -108,9 +140,10 @@ impl BlockHeader {
     ///
     /// - [`BlockError::GasLimitZero`] — `gas_limit` is 0.
     /// - [`BlockError::GasExceeded`] — `gas_used > gas_limit`.
+    // `too_many_arguments`: `BlockHeader` is a primitive blockchain type. All 16 fields
+    // are required and distinct; a builder pattern would add complexity for no structural
+    // benefit.
     #[allow(clippy::too_many_arguments)]
-    // `BlockHeader` is a primitive blockchain type. All 11 fields are required
-    // and distinct; a builder pattern would add complexity for no structural benefit.
     pub fn new(
         height: u64,
         timestamp: u64,
@@ -119,6 +152,11 @@ impl BlockHeader {
         state_root: Hash,
         receipts_root: Hash,
         proposer: Address,
+        epoch: u64,
+        dag_round: u64,
+        dag_anchor: Hash,
+        validators_hash: Hash,
+        next_validators_hash: Hash,
         gas_limit: u64,
         gas_used: u64,
         base_fee: Amount,
@@ -132,6 +170,11 @@ impl BlockHeader {
             state_root,
             receipts_root,
             proposer,
+            epoch,
+            dag_round,
+            dag_anchor,
+            validators_hash,
+            next_validators_hash,
             gas_limit,
             gas_used,
             base_fee,

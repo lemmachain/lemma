@@ -39,6 +39,11 @@ fn genesis_header() -> BlockHeader {
         state_root(),
         Hash::zero(),
         Address::zero(),
+        0,            // epoch
+        0,            // dag_round
+        Hash::zero(), // dag_anchor
+        Hash::zero(), // validators_hash
+        Hash::zero(), // next_validators_hash
         30_000_000,
         0,
         base_fee(),
@@ -57,6 +62,11 @@ fn block_1_header() -> BlockHeader {
         state_root(),
         Hash::zero(),
         Address::zero(),
+        1,                              // epoch
+        10,                             // dag_round
+        Hash::from_bytes([0x0Au8; 32]), // dag_anchor
+        Hash::from_bytes([0x0Bu8; 32]), // validators_hash
+        Hash::from_bytes([0x0Bu8; 32]), // next_validators_hash (same epoch)
         30_000_000,
         21_000,
         base_fee(),
@@ -75,6 +85,11 @@ fn block_2_header() -> BlockHeader {
         state_root(),
         Hash::zero(),
         Address::zero(),
+        1,                              // epoch
+        11,                             // dag_round
+        Hash::from_bytes([0x0Cu8; 32]), // dag_anchor
+        Hash::from_bytes([0x0Bu8; 32]), // validators_hash
+        Hash::from_bytes([0x0Bu8; 32]), // next_validators_hash (same epoch)
         30_000_000,
         42_000,
         base_fee(),
@@ -90,6 +105,7 @@ fn transfer_tx() -> Transaction {
         Address::zero(),
         Some(Address::burn()),
         0,
+        1,
         Amount::zero(),
         21_000,
         gas_price(),
@@ -175,6 +191,11 @@ fn new_block_rejects_gas_accounting_mismatch() {
         state_root(),
         Hash::zero(),
         Address::zero(),
+        0,
+        0,
+        Hash::zero(),
+        Hash::zero(),
+        Hash::zero(),
         30_000_000,
         99_000, // does not match receipt gas_used
         base_fee(),
@@ -201,6 +222,11 @@ fn new_block_propagates_header_gas_limit_zero_error() {
         state_root: state_root(),
         receipts_root: Hash::zero(),
         proposer: Address::zero(),
+        epoch: 0,
+        dag_round: 0,
+        dag_anchor: Hash::zero(),
+        validators_hash: Hash::zero(),
+        next_validators_hash: Hash::zero(),
         gas_limit: 0, // invalid
         gas_used: 0,
         base_fee: base_fee(),
@@ -220,6 +246,11 @@ fn new_block_propagates_header_gas_exceeded_error() {
         state_root: state_root(),
         receipts_root: Hash::zero(),
         proposer: Address::zero(),
+        epoch: 0,
+        dag_round: 0,
+        dag_anchor: Hash::zero(),
+        validators_hash: Hash::zero(),
+        next_validators_hash: Hash::zero(),
         gas_limit: 1_000,
         gas_used: 2_000, // invalid
         base_fee: base_fee(),
@@ -284,6 +315,11 @@ fn validate_rejects_gas_limit_zero_on_deserialized_block() {
         state_root: state_root(),
         receipts_root: Hash::zero(),
         proposer: Address::zero(),
+        epoch: 0,
+        dag_round: 0,
+        dag_anchor: Hash::zero(),
+        validators_hash: Hash::zero(),
+        next_validators_hash: Hash::zero(),
         gas_limit: 0, // tampered
         gas_used: 0,
         base_fee: base_fee(),
@@ -307,6 +343,11 @@ fn validate_rejects_gas_exceeded_on_deserialized_block() {
         state_root: state_root(),
         receipts_root: Hash::zero(),
         proposer: Address::zero(),
+        epoch: 0,
+        dag_round: 0,
+        dag_anchor: Hash::zero(),
+        validators_hash: Hash::zero(),
+        next_validators_hash: Hash::zero(),
         gas_limit: 1_000,
         gas_used: 2_000, // tampered: exceeds limit
         base_fee: base_fee(),

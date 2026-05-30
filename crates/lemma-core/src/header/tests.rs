@@ -31,6 +31,11 @@ fn genesis_header() -> BlockHeader {
         state_root(),
         Hash::zero(),
         proposer(),
+        0,            // epoch
+        0,            // dag_round
+        Hash::zero(), // dag_anchor
+        Hash::zero(), // validators_hash
+        Hash::zero(), // next_validators_hash
         30_000_000,
         0,
         base_fee(),
@@ -49,6 +54,11 @@ fn block_1_header() -> BlockHeader {
         state_root(),
         Hash::zero(),
         proposer(),
+        1,                              // epoch
+        10,                             // dag_round
+        Hash::from_bytes([0x0Au8; 32]), // dag_anchor
+        Hash::from_bytes([0x0Bu8; 32]), // validators_hash
+        Hash::from_bytes([0x0Bu8; 32]), // next_validators_hash (same epoch)
         30_000_000,
         15_000_000, // exactly 50% — not above target
         base_fee(),
@@ -84,6 +94,11 @@ fn new_header_with_gas_used_equal_to_limit_succeeds() {
         state_root(),
         Hash::zero(),
         proposer(),
+        0,
+        0,
+        Hash::zero(),
+        Hash::zero(),
+        Hash::zero(),
         21_000,
         21_000, // gas_used == gas_limit is valid
         base_fee(),
@@ -98,6 +113,9 @@ fn new_header_stores_all_fields_correctly() {
     let tx_root = Hash::from_bytes([0xBBu8; 32]);
     let rcpt_root = Hash::from_bytes([0xCCu8; 32]);
     let custom_fee = Amount::from_drop(2_000_000_000);
+    let anchor = Hash::from_bytes([0xD0u8; 32]);
+    let validators = Hash::from_bytes([0xE0u8; 32]);
+    let next_validators = Hash::from_bytes([0xF0u8; 32]);
 
     let h = BlockHeader::new(
         5,
@@ -107,6 +125,11 @@ fn new_header_stores_all_fields_correctly() {
         state_root(),
         rcpt_root,
         Address::burn(),
+        3,  // epoch
+        77, // dag_round
+        anchor,
+        validators,
+        next_validators,
         50_000_000,
         10_000_000,
         custom_fee,
@@ -121,10 +144,60 @@ fn new_header_stores_all_fields_correctly() {
     assert_eq!(h.state_root, state_root());
     assert_eq!(h.receipts_root, rcpt_root);
     assert_eq!(h.proposer, Address::burn());
+    assert_eq!(h.epoch, 3);
+    assert_eq!(h.dag_round, 77);
+    assert_eq!(h.dag_anchor, anchor);
+    assert_eq!(h.validators_hash, validators);
+    assert_eq!(h.next_validators_hash, next_validators);
     assert_eq!(h.gas_limit, 50_000_000);
     assert_eq!(h.gas_used, 10_000_000);
     assert_eq!(h.base_fee, custom_fee);
     assert_eq!(h.extra_data, extra);
+}
+
+// ── Consensus provenance / committee commitments ─────────────────────────────
+
+#[test]
+fn new_header_stores_consensus_provenance_fields() {
+    let anchor = Hash::from_bytes([0x11u8; 32]);
+    let validators = Hash::from_bytes([0x22u8; 32]);
+    let next_validators = Hash::from_bytes([0x33u8; 32]);
+
+    let h = BlockHeader::new(
+        9,
+        1_700_009_000,
+        Hash::from_bytes([0x09u8; 32]),
+        Hash::zero(),
+        state_root(),
+        Hash::zero(),
+        proposer(),
+        4,   // epoch
+        128, // dag_round
+        anchor,
+        validators,
+        next_validators,
+        30_000_000,
+        0,
+        base_fee(),
+        vec![],
+    )
+    .unwrap();
+
+    assert_eq!(h.epoch, 4);
+    assert_eq!(h.dag_round, 128);
+    assert_eq!(h.dag_anchor, anchor);
+    assert_eq!(h.validators_hash, validators);
+    assert_eq!(h.next_validators_hash, next_validators);
+}
+
+#[test]
+fn genesis_header_has_zero_consensus_provenance() {
+    let h = genesis_header();
+    assert_eq!(h.epoch, 0);
+    assert_eq!(h.dag_round, 0);
+    assert_eq!(h.dag_anchor, Hash::zero());
+    assert_eq!(h.validators_hash, Hash::zero());
+    assert_eq!(h.next_validators_hash, Hash::zero());
 }
 
 // ── Validation failures ───────────────────────────────────────────────────────
@@ -139,6 +212,11 @@ fn new_header_rejects_zero_gas_limit() {
         state_root(),
         Hash::zero(),
         proposer(),
+        0,
+        0,
+        Hash::zero(),
+        Hash::zero(),
+        Hash::zero(),
         0, // gas_limit = 0 — invalid
         0,
         base_fee(),
@@ -157,6 +235,11 @@ fn new_header_rejects_gas_used_exceeding_gas_limit() {
         state_root(),
         Hash::zero(),
         proposer(),
+        0,
+        0,
+        Hash::zero(),
+        Hash::zero(),
+        Hash::zero(),
         21_000,
         21_001, // gas_used > gas_limit
         base_fee(),
@@ -197,6 +280,11 @@ fn validate_rejects_zero_gas_limit_on_deserialized_header() {
         state_root: state_root(),
         receipts_root: Hash::zero(),
         proposer: proposer(),
+        epoch: 0,
+        dag_round: 0,
+        dag_anchor: Hash::zero(),
+        validators_hash: Hash::zero(),
+        next_validators_hash: Hash::zero(),
         gas_limit: 0, // tampered
         gas_used: 0,
         base_fee: base_fee(),
@@ -215,6 +303,11 @@ fn validate_rejects_gas_exceeded_on_deserialized_header() {
         state_root: state_root(),
         receipts_root: Hash::zero(),
         proposer: proposer(),
+        epoch: 0,
+        dag_round: 0,
+        dag_anchor: Hash::zero(),
+        validators_hash: Hash::zero(),
+        next_validators_hash: Hash::zero(),
         gas_limit: 1_000,
         gas_used: 2_000, // tampered
         base_fee: base_fee(),
@@ -272,6 +365,11 @@ fn is_above_target_gas_true_when_gas_used_exceeds_half() {
         state_root(),
         Hash::zero(),
         proposer(),
+        0,
+        0,
+        Hash::zero(),
+        Hash::zero(),
+        Hash::zero(),
         30_000_000,
         15_000_001, // one unit above target
         base_fee(),
@@ -291,6 +389,11 @@ fn is_above_target_gas_true_when_block_is_full() {
         state_root(),
         Hash::zero(),
         proposer(),
+        0,
+        0,
+        Hash::zero(),
+        Hash::zero(),
+        Hash::zero(),
         30_000_000,
         30_000_000, // 100% full
         base_fee(),
@@ -311,6 +414,11 @@ fn is_above_target_gas_false_when_gas_limit_is_one_and_gas_used_is_zero() {
         state_root(),
         Hash::zero(),
         proposer(),
+        0,
+        0,
+        Hash::zero(),
+        Hash::zero(),
+        Hash::zero(),
         1,
         0,
         base_fee(),
@@ -331,6 +439,11 @@ fn is_above_target_gas_true_when_gas_limit_is_one_and_gas_used_is_one() {
         state_root(),
         Hash::zero(),
         proposer(),
+        0,
+        0,
+        Hash::zero(),
+        Hash::zero(),
+        Hash::zero(),
         1,
         1,
         base_fee(),
@@ -362,6 +475,11 @@ fn gas_remaining_is_zero_when_block_is_full() {
         state_root(),
         Hash::zero(),
         proposer(),
+        0,
+        0,
+        Hash::zero(),
+        Hash::zero(),
+        Hash::zero(),
         21_000,
         21_000,
         base_fee(),
@@ -383,6 +501,11 @@ fn gas_remaining_is_correct_at_max_gas_limit() {
         state_root(),
         Hash::zero(),
         proposer(),
+        0,
+        0,
+        Hash::zero(),
+        Hash::zero(),
+        Hash::zero(),
         u64::MAX,
         u64::MAX - 1,
         base_fee(),
@@ -403,6 +526,21 @@ fn genesis_header_roundtrips_through_json() {
 }
 
 #[test]
+fn header_consensus_provenance_survives_json_roundtrip() {
+    // block_1_header carries non-zero epoch/dag_round/dag_anchor/validators —
+    // confirm the new commitments round-trip rather than defaulting to zero.
+    let original = block_1_header();
+    let json = serde_json::to_string(&original).unwrap();
+    let decoded: BlockHeader = serde_json::from_str(&json).unwrap();
+    assert_eq!(decoded, original);
+    assert_eq!(decoded.epoch, original.epoch);
+    assert_eq!(decoded.dag_round, original.dag_round);
+    assert_eq!(decoded.dag_anchor, original.dag_anchor);
+    assert_eq!(decoded.validators_hash, original.validators_hash);
+    assert_eq!(decoded.next_validators_hash, original.next_validators_hash);
+}
+
+#[test]
 fn header_with_extra_data_roundtrips_through_json() {
     let original = BlockHeader::new(
         3,
@@ -412,6 +550,11 @@ fn header_with_extra_data_roundtrips_through_json() {
         state_root(),
         Hash::zero(),
         proposer(),
+        0,
+        0,
+        Hash::zero(),
+        Hash::zero(),
+        Hash::zero(),
         30_000_000,
         5_000_000,
         base_fee(),
