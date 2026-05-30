@@ -16,7 +16,10 @@ pqcrypto-mldsa = { workspace = true }
 pqcrypto-traits = { workspace = true }
 sha2 = { workspace = true }
 sha3 = { workspace = true }
+subtle = { workspace = true }  # constant-time key comparison in verify() (AGENTS.md §7.3)
 
 [dev-dependencies]
-hex = { workspace = true }     # decode known test vectors in tests
+hex        = { workspace = true }  # known test vectors
+serde_json = { workspace = true }  # JSON round-trip tests
+bincode    = { workspace = true }  # bincode round-trip tests (already in deps, explicit here for clarity)
 subtle = { workspace = true }

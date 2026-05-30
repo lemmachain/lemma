@@ -16,6 +16,8 @@
 
 pub mod error;
 pub mod hashing;
+pub mod keypair;
 
 pub use error::CryptoError;
 pub use hashing::{hash, hash_bytes, keccak256, sha256};
+pub use keypair::{verify, HybridSignature, KeyPair, PublicKey};
