@@ -221,6 +221,10 @@ fn serialize_zero_hash_to_json_is_all_zero_hex() {
 #[test]
 fn clone_produces_equal_hash() {
     let original = known_hash();
+    // Deliberately exercise the `Clone` impl (distinct from the `Copy` test below).
+    // `Hash` is `Copy`, so clippy flags this — but the explicit `.clone()` call IS
+    // the unit under test here. Targeted allow per AGENTS.md §4.1.
+    #[allow(clippy::clone_on_copy)]
     let cloned = original.clone();
     assert_eq!(original, cloned);
 }

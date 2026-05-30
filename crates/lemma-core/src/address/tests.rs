@@ -605,7 +605,7 @@ fn address_ordering_is_lexicographic_over_bytes() {
     // Address with first byte 0x00 < Address with first byte 0x01.
     // This property is required for deterministic BTreeMap iteration
     // across all nodes (AGENTS.md §7.1).
-    let mut low_bytes = [0u8; 20];
+    let low_bytes = [0u8; 20];
     let mut high_bytes = [0u8; 20];
     high_bytes[0] = 0x01;
     let low = Address(low_bytes);

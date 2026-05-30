@@ -442,8 +442,14 @@ fn smaller_amount_is_less_than_larger() {
 
 #[test]
 fn equal_amounts_are_not_less_than_each_other() {
-    assert!(!(one_lem() < one_lem()));
-    assert!(!(one_lem() > one_lem()));
+    // Deliberately assert the `<` and `>` operators themselves return false for
+    // equal values. Clippy suggests rewriting to `>=`/`<=`, which would test the
+    // OPPOSITE operators and defeat the test's intent. Targeted allow per AGENTS.md §4.1.
+    #[allow(clippy::nonminimal_bool)]
+    {
+        assert!(!(one_lem() < one_lem()));
+        assert!(!(one_lem() > one_lem()));
+    }
 }
 
 #[test]
