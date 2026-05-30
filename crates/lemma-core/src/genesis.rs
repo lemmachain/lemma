@@ -26,7 +26,12 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{address::Address, amount::Amount, error::CoreError};
+use crate::{
+    address::Address,
+    amount::Amount,
+    error::{CoreError, ValidatorError},
+    validator::Validator,
+};
 
 // ─── GenesisConfig ────────────────────────────────────────────────────────────
 
@@ -51,7 +56,8 @@ use crate::{address::Address, amount::Amount, error::CoreError};
 ///   "genesis_timestamp": 1700000000,
 ///   "initial_gas_limit": 30000000,
 ///   "initial_base_fee": "1000000000",
-///   "initial_balances": {}
+///   "initial_balances": {},
+///   "genesis_validators": {}
 /// }"#;
 ///
 /// let config: GenesisConfig =
@@ -94,6 +100,18 @@ pub struct GenesisConfig {
     /// computation — a [`HashMap`] would produce different roots on different
     /// nodes due to random hash seed variation. See AGENTS.md §7.1.
     pub initial_balances: BTreeMap<Address, Amount>,
+
+    /// Initial validator set at genesis — the **out-of-band trust root** from
+    /// which the committee hash-chain begins.
+    ///
+    /// Epoch 0 starts from this set. Light clients bootstrap from the genesis
+    /// validator set and walk the chain of quorum-certified epoch-boundary
+    /// headers to advance the committee forward
+    /// (`docs/13-VALIDATOR_EPOCH_SPEC §4.4`, `docs/12-NETWORK_SYNC_SPEC §3.5`).
+    ///
+    /// [`BTreeMap`] keyed by operator [`Address`] for deterministic iteration
+    /// (AGENTS.md §7.1) — follows the same pattern as `initial_balances`.
+    pub genesis_validators: BTreeMap<Address, Validator>,
 }
 
 impl GenesisConfig {
@@ -108,10 +126,28 @@ impl GenesisConfig {
     ///
     /// Note: `initial_base_fee == 0` is permitted — devnet chains may start
     /// with zero base fee and let the Burn Fee Model ramp up from block 1.
+    /// # Errors
+    ///
+    /// - [`CoreError::Block(BlockError::GasLimitZero)`](crate::error::BlockError::GasLimitZero)
+    ///   if `initial_gas_limit` is 0.
+    /// - [`CoreError::Validator(ValidatorError::EmptyGenesisValidators)`]
+    ///   if `genesis_validators` is empty.
+    /// - [`CoreError::Validator(ValidatorError::ZeroGenesisStake)`]
+    ///   if any genesis validator has zero active stake.
     #[must_use = "ignoring this result means an invalid genesis config may be used to boot the node"]
     pub fn validate(&self) -> Result<(), CoreError> {
         if self.initial_gas_limit == 0 {
             return Err(CoreError::Block(crate::error::BlockError::GasLimitZero));
+        }
+        if self.genesis_validators.is_empty() {
+            return Err(CoreError::Validator(ValidatorError::EmptyGenesisValidators));
+        }
+        for (addr, val) in &self.genesis_validators {
+            if val.self_stake.active == Amount::zero() {
+                return Err(CoreError::Validator(ValidatorError::ZeroGenesisStake {
+                    address: addr.to_string(),
+                }));
+            }
         }
         Ok(())
     }

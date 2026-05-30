@@ -10,12 +10,13 @@ use super::*;
 use crate::{
     address::Address,
     amount::Amount,
-    error::{BlockError, CoreError},
+    error::{BlockError, CoreError, ValidatorError},
+    validator::{ConsensusKey, Stake, Validator, ValidatorStatus},
 };
 
 // NOTE: Each constraint in validate() must have a corresponding negative test
-// here. Current constraints: initial_gas_limit > 0.
-// If initial_base_fee validation is added in future, add its test here too.
+// here. Current constraints: initial_gas_limit > 0, genesis_validators non-empty,
+// genesis validators have non-zero active stake.
 
 // ── Shared fixtures ───────────────────────────────────────────────────────────
 
@@ -39,7 +40,27 @@ fn half_drip() -> Amount {
     Amount::from_drop(500_000)
 }
 
-/// Minimal valid genesis with no pre-funded accounts.
+fn test_validator() -> Validator {
+    Validator {
+        address: Address::zero(),
+        consensus_pubkey: ConsensusKey::from_bytes(vec![0u8; 32], vec![0u8; 1952]),
+        status: ValidatorStatus::Bonded,
+        tombstoned: false,
+        self_stake: Stake {
+            active: Amount::from_drop(1_000_000_000_000_000_000), // 1 LEM
+            pending_active: Amount::zero(),
+            pending_inactive: Vec::new(),
+            inactive: Amount::zero(),
+        },
+        delegated: Amount::zero(),
+        commission_bps: 500, // 5%
+        jailed_until: None,
+    }
+}
+
+/// Minimal genesis with no pre-funded accounts and no validators.
+/// NOT valid for `validate()` — use `genesis_with_validators()` for tests
+/// that call `validate()` and expect `Ok(())`.
 fn empty_genesis() -> GenesisConfig {
     GenesisConfig {
         chain_id: 1,
@@ -47,10 +68,13 @@ fn empty_genesis() -> GenesisConfig {
         initial_gas_limit: 30_000_000,
         initial_base_fee: base_fee(),
         initial_balances: BTreeMap::new(),
+        genesis_validators: BTreeMap::new(),
     }
 }
 
-/// Genesis with one pre-funded account.
+/// Genesis with one pre-funded account but no validators.
+/// NOT valid for `validate()` — use `genesis_with_validators()` for tests
+/// that call `validate()` and expect `Ok(())`.
 fn funded_genesis() -> GenesisConfig {
     let mut balances = BTreeMap::new();
     balances.insert(funded_address(), one_lem());
@@ -60,25 +84,53 @@ fn funded_genesis() -> GenesisConfig {
         initial_gas_limit: 30_000_000,
         initial_base_fee: base_fee(),
         initial_balances: balances,
+        genesis_validators: BTreeMap::new(),
+    }
+}
+
+/// Minimal valid genesis with one validator — passes `validate()`.
+fn genesis_with_validators() -> GenesisConfig {
+    let val = test_validator();
+    let mut validators = BTreeMap::new();
+    validators.insert(val.address, val);
+    GenesisConfig {
+        genesis_validators: validators,
+        ..empty_genesis()
     }
 }
 
 // ── validate — happy path ─────────────────────────────────────────────────────
 
 #[test]
-fn validate_returns_ok_for_empty_genesis() {
-    assert!(empty_genesis().validate().is_ok());
+fn validate_returns_ok_for_genesis_with_validators() {
+    assert!(genesis_with_validators().validate().is_ok());
 }
 
 #[test]
-fn validate_returns_ok_for_funded_genesis() {
-    assert!(funded_genesis().validate().is_ok());
+fn validate_accepts_valid_genesis_with_zero_base_fee() {
+    let config = GenesisConfig {
+        initial_base_fee: Amount::zero(),
+        ..genesis_with_validators()
+    };
+    assert!(config.validate().is_ok());
+}
+
+#[test]
+fn validate_accepts_valid_genesis_with_funded_accounts() {
+    let mut balances = BTreeMap::new();
+    balances.insert(funded_address(), one_lem());
+    let config = GenesisConfig {
+        initial_balances: balances,
+        ..genesis_with_validators()
+    };
+    assert!(config.validate().is_ok());
 }
 
 // ── validate — negative paths ─────────────────────────────────────────────────
 
 #[test]
 fn validate_rejects_zero_initial_gas_limit() {
+    // gas_limit == 0 is checked before validators, so empty validators is fine here.
     let config = GenesisConfig {
         initial_gas_limit: 0, // invalid
         ..empty_genesis()
@@ -86,6 +138,32 @@ fn validate_rejects_zero_initial_gas_limit() {
     assert!(matches!(
         config.validate().unwrap_err(),
         CoreError::Block(BlockError::GasLimitZero)
+    ));
+}
+
+#[test]
+fn validate_rejects_empty_genesis_validators() {
+    // empty_genesis() has no validators — validate() should reject it.
+    let config = empty_genesis();
+    assert!(matches!(
+        config.validate().unwrap_err(),
+        CoreError::Validator(ValidatorError::EmptyGenesisValidators)
+    ));
+}
+
+#[test]
+fn validate_rejects_zero_stake_genesis_validator() {
+    let mut val = test_validator();
+    val.self_stake.active = Amount::zero(); // invalid — zero active stake
+    let mut validators = BTreeMap::new();
+    validators.insert(val.address, val);
+    let config = GenesisConfig {
+        genesis_validators: validators,
+        ..empty_genesis()
+    };
+    assert!(matches!(
+        config.validate().unwrap_err(),
+        CoreError::Validator(ValidatorError::ZeroGenesisStake { .. })
     ));
 }
 
@@ -146,10 +224,6 @@ fn balance_of_returns_none_for_address_not_in_genesis() {
     assert!(funded_genesis().balance_of(&other_address()).is_none());
 }
 
-// ── validate — negative test coverage note ────────────────────────────────────
-// Each constraint in validate() must have a test here.
-// Current constraint: initial_gas_limit > 0.
-
 // ── Serde ─────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -187,6 +261,15 @@ fn genesis_with_multiple_accounts_roundtrips_through_json() {
 }
 
 #[test]
+fn genesis_with_validators_roundtrips_through_json() {
+    let original = genesis_with_validators();
+    let json = serde_json::to_string(&original).expect("GenesisConfig should serialize to JSON");
+    let decoded: GenesisConfig =
+        serde_json::from_str(&json).expect("GenesisConfig should deserialize from JSON");
+    assert_eq!(decoded, original);
+}
+
+#[test]
 fn genesis_deserialized_from_json_literal_has_correct_chain_id() {
     // Validates that real genesis JSON files (as would be shipped with the node)
     // deserialize correctly. The key names must match the serde field names.
@@ -195,7 +278,8 @@ fn genesis_deserialized_from_json_literal_has_correct_chain_id() {
         "genesis_timestamp": 1700000000,
         "initial_gas_limit": 30000000,
         "initial_base_fee": "1000000000",
-        "initial_balances": {}
+        "initial_balances": {},
+        "genesis_validators": {}
     }"#;
     let config: GenesisConfig =
         serde_json::from_str(json).expect("Literal genesis JSON should deserialize correctly");
@@ -204,6 +288,7 @@ fn genesis_deserialized_from_json_literal_has_correct_chain_id() {
     assert_eq!(config.initial_gas_limit, 30_000_000);
     assert_eq!(config.initial_base_fee, Amount::from_drop(1_000_000_000));
     assert!(config.initial_balances.is_empty());
+    assert!(config.genesis_validators.is_empty());
 }
 
 // ── Clone / PartialEq ─────────────────────────────────────────────────────────

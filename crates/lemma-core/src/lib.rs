@@ -18,6 +18,9 @@
 //! | [`header`] | [`BlockHeader`] — block metadata commitment |
 //! | [`signature`] | [`Signature`] — Classical / PostQuantum / Hybrid wrapper |
 //! | [`transaction`] | [`Transaction`], [`TxType`], [`TransactionReceipt`], [`Log`] |
+//! | [`validator`] | [`Validator`], [`ValidatorStatus`], [`ConsensusKey`], [`Stake`], [`VotingPower`] |
+//! | [`validator_set`] | [`ValidatorSet`], [`Member`] — epoch committee |
+//! | [`epoch`] | [`Epoch`] — validator-set era |
 //!
 //! ## Build order
 //!
@@ -28,12 +31,15 @@
 pub mod address;
 pub mod amount;
 pub mod block;
+pub mod epoch;
 pub mod error;
 pub mod genesis;
 pub mod hash;
 pub mod header;
 pub mod signature;
 pub mod transaction;
+pub mod validator;
+pub mod validator_set;
 
 // ── Crate-root re-exports ────────────────────────────────────────────────────
 // Allows `use lemma_core::Address` instead of `use lemma_core::address::Address`.
@@ -46,10 +52,13 @@ pub use signature::Signature;
 
 pub use error::{
     AddressError, AmountError, BlockError, CoreError, HashError, SerializationError,
-    TransactionError,
+    TransactionError, ValidatorError,
 };
 
 pub use block::Block;
 pub use genesis::GenesisConfig;
 pub use header::BlockHeader;
 pub use transaction::{Log, Transaction, TransactionReceipt, TxType};
+pub use validator::{ConsensusKey, Stake, UnbondingEntry, Validator, ValidatorStatus, VotingPower};
+pub use validator_set::{Member, ValidatorSet};
+pub use epoch::Epoch;

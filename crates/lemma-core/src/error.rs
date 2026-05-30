@@ -192,6 +192,21 @@ impl From<serde_json::Error> for SerializationError {
     }
 }
 
+// ─── Validator ───────────────────────────────────────────────────────────────
+
+/// Errors that can occur during validator or epoch operations.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ValidatorError {
+    /// The genesis validator set is empty — epoch 0 cannot be bootstrapped.
+    #[error("genesis validator set is empty: cannot bootstrap epoch 0")]
+    EmptyGenesisValidators,
+
+    /// A genesis validator has zero active stake.
+    #[error("genesis validator {address} has zero active stake")]
+    ZeroGenesisStake { address: String },
+}
+
 // ─── Top-level ────────────────────────────────────────────────────────────────
 
 /// Top-level error type for `lemma-core`.
@@ -224,6 +239,10 @@ pub enum CoreError {
     /// An error originating from [`SerializationError`] codec operations.
     #[error("serialization error: {0}")]
     Serialization(#[from] SerializationError),
+
+    /// An error originating from [`ValidatorError`] operations.
+    #[error("validator error: {0}")]
+    Validator(#[from] ValidatorError),
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

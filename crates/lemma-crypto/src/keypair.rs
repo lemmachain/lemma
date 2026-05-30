@@ -311,6 +311,36 @@ pub fn verify(
     Ok(())
 }
 
+// ─── Conversions ─────────────────────────────────────────────────────────────
+
+/// Convert a `lemma_crypto::PublicKey` into a `lemma_core::ConsensusKey`.
+///
+/// This is the canonical bridge between the crypto-operations type (`PublicKey`,
+/// which can reconstruct `ed25519_dalek::VerifyingKey` / `mldsa65::PublicKey`)
+/// and the storage type (`ConsensusKey`, which is raw bytes in `lemma-core`).
+///
+/// The dependency direction is correct: `lemma-crypto` depends on `lemma-core`,
+/// so this `From` impl lives here. `lemma-core` never imports `lemma-crypto`.
+impl From<PublicKey> for lemma_core::ConsensusKey {
+    fn from(pk: PublicKey) -> Self {
+        lemma_core::ConsensusKey::from_bytes(pk.classical, pk.quantum)
+    }
+}
+
+/// Convert a `lemma_core::ConsensusKey` into a `lemma_crypto::PublicKey`.
+///
+/// Allows reconstructing the crypto-operations type from stored raw bytes.
+/// No cryptographic validation is performed — call
+/// `PublicKey::classical_verifying_key()` / `quantum_public_key()` to validate.
+impl From<lemma_core::ConsensusKey> for PublicKey {
+    fn from(ck: lemma_core::ConsensusKey) -> Self {
+        PublicKey {
+            classical: ck.classical,
+            quantum:   ck.quantum,
+        }
+    }
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
