@@ -2,7 +2,7 @@
 name = "lemma-crypto"
 version = "0.1.0"
 edition = "2021"
-description = "Cryptographic primitives for Lemma: Ed25519, Dilithium, Blake3, address derivation"
+description = "Cryptographic primitives for Lemma: Ed25519 + ML-DSA (Dilithium), Blake3, address derivation"
 
 [dependencies]
 lemma-core = { path = "../lemma-core" }
@@ -12,6 +12,7 @@ blake3 = { workspace = true }
 bincode = { workspace = true }
 rand = { workspace = true }
 ed25519-dalek = { workspace = true }
-pqcrypto-dilithium = { workspace = true }
+pqcrypto-mldsa = { workspace = true }
+pqcrypto-traits = { workspace = true }
 sha2 = { workspace = true }
 subtle = { workspace = true }

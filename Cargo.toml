@@ -33,11 +33,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 thiserror = "1"
 
-# Cryptography & encoding
-blake3 = "1"
+# Cryptography & encoding (versions audited 2026-05-30)
+blake3 = "1.8"
 bech32 = "0.11"
-ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
-pqcrypto-dilithium = "0.5"
+ed25519-dalek = { version = "2.2", features = ["serde", "rand_core"] }
+pqcrypto-mldsa = "0.1"            # FIPS-204 ML-DSA (PQClean-backed; replaces stale pqcrypto-dilithium)
+pqcrypto-traits = "0.3"          # shared traits for pqcrypto-mldsa
 sha2 = "0.10"
 subtle = "2"
 
@@ -47,16 +48,22 @@ hex = "0.4"
 rand = "0.8.6"
 
 # Storage
-rocksdb = "0.22"
+rocksdb = "0.24"
 
-# Networking
-libp2p = { version = "0.54", features = [
+# Networking (0.56 is tokio-only — async-std removed)
+libp2p = { version = "0.56", features = [
     "tokio", "tcp", "noise", "yamux", "gossipsub",
     "kad", "identify", "mdns", "ping",
 ] }
 
-# VM
-wasmer = "4"
+# VM (fuel metering, OSS-Fuzz, formal verification — chosen over wasmer for metered execution)
+wasmtime = "45"
+
+# ZK (Veil — BLS12-377 + decaf377, Penumbra stack)
+ark-groth16 = "0.6"
+ark-bls12-377 = "0.6"
+ark-std = "0.5"
+ark-serialize = "0.5"
 
 # RPC
 axum = "0.7"
