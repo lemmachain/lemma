@@ -36,7 +36,10 @@ use rocksdb::WriteBatch;
 
 use crate::{
     db::{LemmaDb, CF_TRIE_NODES},
-    trie::node::{NibblePath, TrieNode},
+    trie::{
+        node::{NibblePath, TrieNode},
+        proof::{MerkleProof, ProofNode},
+    },
     StorageError,
 };
 
@@ -132,6 +135,29 @@ impl<'db> MerklePatriciaTrie<'db> {
         self.get_recursive(self.root, path)
     }
 
+    /// Generate a Merkle proof for `key` against the current trie state.
+    ///
+    /// Returns an **inclusion proof** (`value = Some(v)`) if the key exists,
+    /// or a **non-inclusion proof** (`value = None`) if the key is absent.
+    ///
+    /// The proof can be verified offline against the root hash via
+    /// [`MerkleProof::verify`].
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::InvalidProof`] — trie is empty (no root to prove against).
+    /// - [`StorageError::TrieNodeNotFound`] — a referenced node is missing from
+    ///   storage (DB corruption).
+    /// - [`StorageError::SerializationFailed`] — bincode decode failed.
+    pub fn generate_proof(&self, key: &[u8]) -> Result<MerkleProof, StorageError> {
+        let key_hex = hex::encode(key);
+        let root = self.root.ok_or(StorageError::InvalidProof { key: key_hex })?;
+        let path = NibblePath::from_bytes(key);
+        let mut proof_nodes = Vec::new();
+        let value = self.collect_proof(root, path, &mut proof_nodes)?;
+        Ok(MerkleProof { key: key.to_vec(), value, nodes: proof_nodes })
+    }
+
     // ── Node I/O ──────────────────────────────────────────────────────────────
 
     /// Load a node from the `trie_nodes` CF by its hash.
@@ -182,6 +208,61 @@ impl<'db> MerklePatriciaTrie<'db> {
                         .get(0)
                         .expect("path non-empty: guarded by is_empty() check") as usize;
                     self.get_recursive(children[nibble], path.skip(1))
+                }
+            }
+        }
+    }
+
+    // ── Proof collection (recursive) ─────────────────────────────────────────
+
+    /// Walk the trie from `node_hash` toward `path`, appending each visited
+    /// node to `out` as a [`ProofNode`].
+    ///
+    /// Returns `Some(value)` if the key is found (inclusion), `None` if not
+    /// (non-inclusion). Either way, `out` holds the complete proof path.
+    fn collect_proof(
+        &self,
+        node_hash: Hash,
+        path: NibblePath,
+        out: &mut Vec<ProofNode>,
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        let node = self.load_node(node_hash)?;
+        match node {
+            TrieNode::Leaf { path: leaf_path, value: leaf_val } => {
+                out.push(ProofNode::Leaf { path: leaf_path.clone(), value: leaf_val.clone() });
+                Ok(if leaf_path == path { Some(leaf_val) } else { None })
+            }
+            TrieNode::Extension { prefix, child } => {
+                let prefix_len = prefix.len();
+                let starts = path.starts_with(&prefix);
+                out.push(ProofNode::Extension { prefix, child });
+                if starts {
+                    self.collect_proof(child, path.skip(prefix_len), out)
+                } else {
+                    // Key diverges at this extension — non-inclusion.
+                    Ok(None)
+                }
+            }
+            TrieNode::Branch { children, value: branch_val } => {
+                out.push(ProofNode::Branch { children, value: branch_val.clone() });
+                if path.is_empty() {
+                    // Path exhausted at this branch — value stored here.
+                    Ok(branch_val)
+                } else {
+                    // path is non-empty: guarded by is_empty() check above.
+                    let nibble = path
+                        .get(0)
+                        .expect("path non-empty: guarded by is_empty() check")
+                        as usize;
+                    match children[nibble] {
+                        Some(child_hash) => {
+                            self.collect_proof(child_hash, path.skip(1), out)
+                        }
+                        None => {
+                            // Empty child slot — key is absent.
+                            Ok(None)
+                        }
+                    }
                 }
             }
         }

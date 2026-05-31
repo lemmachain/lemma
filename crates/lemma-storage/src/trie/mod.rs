@@ -11,7 +11,7 @@
 //! |--------|----------|
 //! | [`node`] | [`TrieNode`] variants (Branch/Extension/Leaf) + [`NibblePath`] |
 //! | [`trie`] *(Step 5)* | [`MerklePatriciaTrie`] — insert, get, root |
-//! | [`proof`] *(Step 6)* | [`MerkleProof`] — generate + verify |
+//! | [`proof`] *(Step 6)* | [`MerkleProof`], [`ProofNode`] — generate + verify |
 //!
 //! ## Hashing
 //!
@@ -30,7 +30,13 @@
 //! [`BlockHeader`]: lemma_core::BlockHeader
 
 pub mod node;
+pub mod proof;
+// `trie` module has the same name as the parent directory.
+// This is intentional: `trie/mod.rs` is the public facade (re-exports, docs),
+// and `trie/trie.rs` is the implementation. Allow module_inception here.
+#[allow(clippy::module_inception)]
 pub mod trie;
 
 pub use node::{NibblePath, TrieNode};
+pub use proof::{MerkleProof, ProofNode};
 pub use trie::MerklePatriciaTrie;

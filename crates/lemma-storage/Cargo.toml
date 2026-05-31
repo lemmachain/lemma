@@ -11,6 +11,7 @@ lemma-crypto = { path = "../lemma-crypto" }
 serde = { workspace = true }
 bincode = { workspace = true }
 thiserror = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

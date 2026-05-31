@@ -50,8 +50,7 @@ use crate::StorageError;
 ///
 /// Every nibble value is in `0..=15`. Constructors that accept raw bytes
 /// enforce this by construction. [`NibblePath::from_nibbles`] validates at
-/// runtime and returns `None` on invalid input; internal trie code uses
-/// [`NibblePath::from_nibbles_unchecked`] for paths that are provably valid.
+/// runtime and returns `None` on invalid input.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NibblePath {
     /// Nibbles stored one per byte. Each value is in `0..=15`.
@@ -74,36 +73,14 @@ impl NibblePath {
 
     /// Construct a `NibblePath` from a `Vec<u8>` of nibble values.
     ///
-    /// Returns `None` if any value exceeds `15`. For paths derived from
-    /// [`from_bytes`] or internal trie splits (where the invariant is
-    /// guaranteed by construction), use [`from_nibbles_unchecked`] to avoid
-    /// the validation cost.
+    /// Returns `None` if any value exceeds `15`.
     ///
     /// [`from_bytes`]: NibblePath::from_bytes
-    /// [`from_nibbles_unchecked`]: NibblePath::from_nibbles_unchecked
     pub fn from_nibbles(nibbles: Vec<u8>) -> Option<Self> {
         if nibbles.iter().any(|&n| n > 15) {
             return None;
         }
         Some(Self { nibbles })
-    }
-
-    /// Construct a `NibblePath` from nibbles without validation.
-    ///
-    /// # Invariant
-    ///
-    /// Caller guarantees every value is in `0..=15`. Only use this inside
-    /// `trie` module code where nibbles are produced by [`from_bytes`] or a
-    /// validated split — never for externally-sourced nibble sequences.
-    /// A `debug_assert!` enforces the invariant in debug builds.
-    ///
-    /// [`from_bytes`]: NibblePath::from_bytes
-    pub(crate) fn from_nibbles_unchecked(nibbles: Vec<u8>) -> Self {
-        debug_assert!(
-            nibbles.iter().all(|&n| n <= 15),
-            "from_nibbles_unchecked: value > 15 found — caller violated invariant",
-        );
-        Self { nibbles }
     }
 
     /// Number of nibbles in the path.
@@ -216,6 +193,11 @@ impl NibblePath {
 /// Each node is stored in the `trie_nodes` column family keyed by
 /// `TrieNode::hash()`. Branch and Extension nodes reference their children
 /// by their hashes — never by in-memory pointers.
+// The `Branch` variant is intentionally large: it holds `[Option<Hash>; 16]`
+// (552 bytes) to represent a 16-way branch. Boxing would change the bincode
+// layout and break the consensus state root — not allowed (AGENTS.md §7.1).
+// All TrieNode values are behind RocksDB / WriteBatch — not on the hot stack.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TrieNode {
     /// A 16-way branch node.
