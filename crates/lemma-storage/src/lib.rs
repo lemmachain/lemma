@@ -24,10 +24,10 @@ pub mod state;
 pub mod trie;
 
 pub use account::Account;
-pub use db::{
-    LemmaDb, CF_BLOCK_HASH, CF_BLOCKS, CF_METADATA, CF_RECEIPTS, CF_STATE, CF_STORAGE,
-    CF_TRANSACTIONS, CF_TRIE_NODES,
-};
+// Column family name constants (CF_STATE, CF_STORAGE, CF_TRIE_NODES, etc.)
+// are implementation details of the RocksDB layer — not re-exported here.
+// Access them via `lemma_storage::db::CF_*` if needed by integration code.
+pub use db::LemmaDb;
 pub use error::StorageError;
 pub use state::WorldState;
 pub use trie::{MerklePatriciaTrie, MerkleProof, NibblePath, ProofNode, TrieNode};

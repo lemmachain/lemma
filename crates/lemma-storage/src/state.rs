@@ -119,14 +119,17 @@ impl WorldState {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::InvalidProof`] if the trie is empty (no accounts
-    /// written yet — the caller should not commit an empty block, but this is
-    /// not enforced here).
+    /// Returns [`StorageError::KeyNotFound`] if the trie is empty (no accounts
+    /// written yet). The caller should not commit an empty block.
     ///
     /// [`state_root`]: WorldState::state_root
+    // SEC-2: use KeyNotFound rather than InvalidProof — "empty state" is not
+    // a proof failure. Wrong error variant on the settlement path causes
+    // callers to misclassify the condition and trigger the wrong recovery.
+    #[must_use = "the state root must be stored in BlockHeader::state_root"]
     pub fn commit(&self) -> Result<Hash, StorageError> {
-        self.state_root.ok_or(StorageError::InvalidProof {
-            key: "(empty state — no accounts written)".to_string(),
+        self.state_root.ok_or(StorageError::KeyNotFound {
+            key: "(state trie is empty — no accounts written)".to_string(),
         })
     }
 
@@ -144,7 +147,9 @@ impl WorldState {
     /// - [`StorageError::SerializationFailed`] — bincode decode failed.
     pub fn get_account(&self, address: &Address) -> Result<Option<Account>, StorageError> {
         let Some(root) = self.state_root else {
-            // Empty trie — every address is implicitly absent.
+            // Empty trie (WorldState::new with no puts yet) — every address is
+            // implicitly absent. WorldState::with_state_root always sets
+            // state_root = Some(...), so this branch is unreachable for resumed state.
             return Ok(None);
         };
         let trie = MerklePatriciaTrie::with_root(&self.db, root);
@@ -172,8 +177,11 @@ impl WorldState {
         account: &Account,
     ) -> Result<(), StorageError> {
         let bytes = bincode::serialize(account)?;
-        let mut trie = self.trie_mut();
+        let mut trie = self.open_trie();
         trie.insert(address.as_bytes(), bytes)?;
+        // insert() writes all trie nodes atomically via WriteBatch before updating
+        // trie.root(). If insert() errors, the ? propagates and state_root is
+        // unchanged — the state remains consistent with its pre-call value.
         self.state_root = trie.root();
         Ok(())
     }
@@ -183,9 +191,9 @@ impl WorldState {
     /// Return the liquid LEM balance of `address`, or [`Amount::zero()`] if
     /// the account does not exist.
     ///
-    /// Uses `available_balance()` is NOT used here — this returns `balance`
-    /// only (the liquid portion). Use [`get_account`] + [`Account::available_balance`]
-    /// if you need the spendable balance after staked amounts.
+    /// Returns `balance` directly (the liquid portion).
+    /// Use [`get_account`] + [`Account::available_balance`] if you need the
+    /// spendable balance excluding staked LEM.
     ///
     /// [`get_account`]: WorldState::get_account
     pub fn get_balance(&self, address: &Address) -> Result<Amount, StorageError> {
@@ -205,11 +213,25 @@ impl WorldState {
     ///
     /// # Errors
     ///
+    /// - [`StorageError::Corrupted`] — nonce is already at `u64::MAX`. This
+    ///   is unreachable in any realistic chain (1 tx/s for 584 billion years),
+    ///   but `saturating_add` is forbidden here: silent saturation would leave
+    ///   nonce permanently at `u64::MAX`, making all future transactions with
+    ///   `nonce == u64::MAX` permanently valid — a replay attack surface.
     /// - [`StorageError::SerializationFailed`] — bincode encode/decode failed.
     /// - [`StorageError::BatchFailed`] — RocksDB commit failed.
     pub fn increment_nonce(&mut self, address: &Address) -> Result<(), StorageError> {
         let mut account = self.get_account(address)?.unwrap_or_default();
-        account.nonce = account.nonce.saturating_add(1);
+        // SEC-1: use checked_add, not saturating_add. Silent saturation at
+        // u64::MAX creates a replay attack surface on the nonce check.
+        account.nonce = account.nonce.checked_add(1).ok_or_else(|| {
+            StorageError::Corrupted {
+                reason: format!(
+                    "nonce overflow at {} (nonce == u64::MAX)",
+                    hex::encode(address.as_bytes()),
+                ),
+            }
+        })?;
         self.put_account(address, &account)
     }
 
@@ -249,10 +271,10 @@ impl WorldState {
         &mut self,
         address: &Address,
         slot: &Hash,
-        value: Vec<u8>,
+        value: &[u8],
     ) -> Result<(), StorageError> {
         let key = storage_key(address, slot);
-        self.db.put(CF_STORAGE, &key, &value)
+        self.db.put(CF_STORAGE, &key, value)
     }
 
     /// Delete a contract storage slot.
@@ -298,10 +320,13 @@ impl WorldState {
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    /// Create a mutable trie instance rooted at the current state root.
+    /// Open a trie instance rooted at the current state root.
     ///
-    /// If `state_root` is `None` (empty state), creates a fresh empty trie.
-    fn trie_mut(&self) -> MerklePatriciaTrie<'_> {
+    /// The returned trie is mutable (`MerklePatriciaTrie::insert` takes
+    /// `&mut self`). If `state_root` is `None` (empty state), opens a fresh
+    /// empty trie. Named `open_trie` rather than `trie_mut` to avoid confusion:
+    /// the receiver is `&self` (not `&mut self`) — it's the trie that is mutable.
+    fn open_trie(&self) -> MerklePatriciaTrie<'_> {
         match self.state_root {
             Some(root) => MerklePatriciaTrie::with_root(&self.db, root),
             None => MerklePatriciaTrie::new(&self.db),
@@ -316,9 +341,15 @@ impl WorldState {
 /// Layout: `address (20 bytes) ++ slot (32 bytes)`.
 /// This matches the `CF_STORAGE` column family key format defined in `db.rs`.
 fn storage_key(address: &Address, slot: &Hash) -> [u8; STORAGE_KEY_LEN] {
+    let addr_bytes = address.as_bytes();
+    let slot_bytes = slot.as_bytes();
+    // Layout: address (20 bytes) ++ slot (32 bytes) = 52 bytes.
+    // These debug assertions catch any future repr change to Address or Hash.
+    debug_assert_eq!(addr_bytes.len(), 20, "Address must be 20 bytes");
+    debug_assert_eq!(slot_bytes.len(), 32, "Hash must be 32 bytes");
     let mut key = [0u8; STORAGE_KEY_LEN];
-    key[..20].copy_from_slice(address.as_bytes());
-    key[20..].copy_from_slice(slot.as_bytes());
+    key[..20].copy_from_slice(addr_bytes);
+    key[20..].copy_from_slice(slot_bytes);
     key
 }
 

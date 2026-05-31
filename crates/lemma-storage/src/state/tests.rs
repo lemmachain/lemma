@@ -202,28 +202,29 @@ fn get_storage_on_absent_slot_returns_none() {
 #[test]
 fn put_then_get_storage_returns_same_value() {
     let (mut ws, _dir) = world_state();
-    let value = b"stored_value".to_vec();
-    ws.put_storage(&addr(0x01), &slot(0x01), value.clone())
+    ws.put_storage(&addr(0x01), &slot(0x01), b"stored_value")
         .expect("put_storage must succeed");
     let got = ws
         .get_storage(&addr(0x01), &slot(0x01))
         .expect("get_storage must succeed");
-    assert_eq!(got, Some(value));
+    assert_eq!(got, Some(b"stored_value".to_vec()));
 }
 
 #[test]
 fn storage_slots_are_isolated_per_address() {
     let (mut ws, _dir) = world_state();
-    ws.put_storage(&addr(0x01), &slot(0x01), b"addr1_slot1".to_vec())
-        .expect("put must succeed");
-    ws.put_storage(&addr(0x02), &slot(0x01), b"addr2_slot1".to_vec())
-        .expect("put must succeed");
+    ws.put_storage(&addr(0x01), &slot(0x01), b"addr1_slot1")
+        .expect("put addr1 must succeed");
+    ws.put_storage(&addr(0x02), &slot(0x01), b"addr2_slot1")
+        .expect("put addr2 must succeed");
     assert_eq!(
-        ws.get_storage(&addr(0x01), &slot(0x01)).unwrap(),
+        ws.get_storage(&addr(0x01), &slot(0x01))
+            .expect("get addr1 must succeed"),
         Some(b"addr1_slot1".to_vec()),
     );
     assert_eq!(
-        ws.get_storage(&addr(0x02), &slot(0x01)).unwrap(),
+        ws.get_storage(&addr(0x02), &slot(0x01))
+            .expect("get addr2 must succeed"),
         Some(b"addr2_slot1".to_vec()),
     );
 }
@@ -231,16 +232,18 @@ fn storage_slots_are_isolated_per_address() {
 #[test]
 fn storage_slots_are_isolated_per_slot() {
     let (mut ws, _dir) = world_state();
-    ws.put_storage(&addr(0x01), &slot(0xAA), b"slotAA".to_vec())
-        .expect("put must succeed");
-    ws.put_storage(&addr(0x01), &slot(0xBB), b"slotBB".to_vec())
-        .expect("put must succeed");
+    ws.put_storage(&addr(0x01), &slot(0xAA), b"slotAA")
+        .expect("put slotAA must succeed");
+    ws.put_storage(&addr(0x01), &slot(0xBB), b"slotBB")
+        .expect("put slotBB must succeed");
     assert_eq!(
-        ws.get_storage(&addr(0x01), &slot(0xAA)).unwrap(),
+        ws.get_storage(&addr(0x01), &slot(0xAA))
+            .expect("get slotAA must succeed"),
         Some(b"slotAA".to_vec()),
     );
     assert_eq!(
-        ws.get_storage(&addr(0x01), &slot(0xBB)).unwrap(),
+        ws.get_storage(&addr(0x01), &slot(0xBB))
+            .expect("get slotBB must succeed"),
         Some(b"slotBB".to_vec()),
     );
 }
@@ -248,7 +251,7 @@ fn storage_slots_are_isolated_per_slot() {
 #[test]
 fn delete_storage_removes_slot() {
     let (mut ws, _dir) = world_state();
-    ws.put_storage(&addr(0x01), &slot(0x01), b"value".to_vec())
+    ws.put_storage(&addr(0x01), &slot(0x01), b"value")
         .expect("put must succeed");
     ws.delete_storage(&addr(0x01), &slot(0x01))
         .expect("delete must succeed");
@@ -291,14 +294,18 @@ fn state_root_changes_when_account_changes() {
 fn state_root_is_deterministic_for_same_accounts() {
     // Same set of accounts, inserted in the same order → same root.
     let (mut ws1, _dir1) = world_state();
-    ws1.put_account(&addr(0x01), &account_with_balance(100)).unwrap();
-    ws1.put_account(&addr(0x02), &account_with_balance(200)).unwrap();
-    let root1 = ws1.state_root().unwrap();
+    ws1.put_account(&addr(0x01), &account_with_balance(100))
+        .expect("ws1 put addr1 must succeed");
+    ws1.put_account(&addr(0x02), &account_with_balance(200))
+        .expect("ws1 put addr2 must succeed");
+    let root1 = ws1.state_root().expect("ws1 must have a root");
 
     let (mut ws2, _dir2) = world_state();
-    ws2.put_account(&addr(0x01), &account_with_balance(100)).unwrap();
-    ws2.put_account(&addr(0x02), &account_with_balance(200)).unwrap();
-    let root2 = ws2.state_root().unwrap();
+    ws2.put_account(&addr(0x01), &account_with_balance(100))
+        .expect("ws2 put addr1 must succeed");
+    ws2.put_account(&addr(0x02), &account_with_balance(200))
+        .expect("ws2 put addr2 must succeed");
+    let root2 = ws2.state_root().expect("ws2 must have a root");
 
     assert_eq!(root1, root2, "identical accounts must produce the same state root");
 }
@@ -364,13 +371,95 @@ fn contract_account_roundtrip() {
     assert_eq!(got.code_hash, contract.code_hash);
 }
 
+// ── TEST-1: nonce overflow ────────────────────────────────────────────────────
+
+#[test]
+fn increment_nonce_at_u64_max_returns_error() {
+    // SEC-1: saturating_add was replaced with checked_add to prevent a silent
+    // nonce overflow that would create a replay attack surface.
+    let (mut ws, _dir) = world_state();
+    let address = addr(0x01);
+    let mut account = account_with_balance(0);
+    account.nonce = u64::MAX;
+    ws.put_account(&address, &account).expect("put must succeed");
+    let result = ws.increment_nonce(&address);
+    assert!(
+        result.is_err(),
+        "increment_nonce at u64::MAX must return Err, not silently saturate",
+    );
+}
+
+// ── TEST-2: with_state_root roundtrip ────────────────────────────────────────
+
+#[test]
+fn with_state_root_get_account_returns_persisted_account() {
+    // Write an account, capture the root, then resume from that root on the
+    // same DB path and verify the account is still readable.
+    // RocksDB holds a file lock per process — we must drop the first WorldState
+    // (and its LemmaDb) before reopening the same path.
+    let dir = tempdir().expect("tempdir must succeed");
+    let address = addr(0x42);
+    let account = account_with_balance(12_345);
+    let root = {
+        let db = LemmaDb::open(dir.path()).expect("first open must succeed");
+        let mut ws = WorldState::new(db);
+        ws.put_account(&address, &account).expect("put must succeed");
+        ws.commit().expect("commit must succeed")
+        // ws (and its LemmaDb) drops here — RocksDB lock released
+    };
+    // Reopen the same path and resume from the captured root.
+    let db2 = LemmaDb::open(dir.path())
+        .expect("reopen after first close must succeed");
+    let ws2 = WorldState::with_state_root(db2, root);
+    let got = ws2.get_account(&address).expect("get must succeed on resumed state");
+    assert_eq!(got, Some(account), "resumed WorldState must return the persisted account");
+}
+
+// ── TEST-3: put_storage with empty value ─────────────────────────────────────
+
+#[test]
+fn put_storage_empty_value_is_distinct_from_absent() {
+    // Doc contract: "Writing an empty value is valid (not the same as deletion)".
+    let (mut ws, _dir) = world_state();
+    ws.put_storage(&addr(0x01), &slot(0x01), b"")
+        .expect("put with empty value must succeed");
+    let got = ws.get_storage(&addr(0x01), &slot(0x01))
+        .expect("get must succeed");
+    // Empty slice is present, not None — distinct from a missing slot.
+    assert_eq!(got, Some(vec![]), "empty value must be stored, not treated as absent");
+}
+
+// ── TEST-4: delete then put storage (re-insert after delete) ─────────────────
+
+#[test]
+fn delete_then_put_storage_restores_slot() {
+    let (mut ws, _dir) = world_state();
+    ws.put_storage(&addr(0x01), &slot(0x01), b"original")
+        .expect("initial put must succeed");
+    ws.delete_storage(&addr(0x01), &slot(0x01))
+        .expect("delete must succeed");
+    ws.put_storage(&addr(0x01), &slot(0x01), b"restored")
+        .expect("re-insert after delete must succeed");
+    let got = ws.get_storage(&addr(0x01), &slot(0x01))
+        .expect("get after re-insert must succeed");
+    assert_eq!(got, Some(b"restored".to_vec()), "re-inserted value must be readable");
+}
+
+// ── Edge cases (continued) ───────────────────────────────────────────────────
+
 #[test]
 fn storage_key_collision_different_addresses_same_slot() {
     // Prove the composite key design isolates (addr1, slotX) from (addr2, slotX).
     let (mut ws, _dir) = world_state();
     let s = slot(0x42);
-    ws.put_storage(&addr(0x11), &s, b"val_11".to_vec()).unwrap();
-    ws.put_storage(&addr(0x22), &s, b"val_22".to_vec()).unwrap();
-    assert_eq!(ws.get_storage(&addr(0x11), &s).unwrap(), Some(b"val_11".to_vec()));
-    assert_eq!(ws.get_storage(&addr(0x22), &s).unwrap(), Some(b"val_22".to_vec()));
+    ws.put_storage(&addr(0x11), &s, b"val_11").expect("put addr 0x11 must succeed");
+    ws.put_storage(&addr(0x22), &s, b"val_22").expect("put addr 0x22 must succeed");
+    assert_eq!(
+        ws.get_storage(&addr(0x11), &s).expect("get addr 0x11 must succeed"),
+        Some(b"val_11".to_vec()),
+    );
+    assert_eq!(
+        ws.get_storage(&addr(0x22), &s).expect("get addr 0x22 must succeed"),
+        Some(b"val_22".to_vec()),
+    );
 }
