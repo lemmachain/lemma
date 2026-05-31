@@ -49,9 +49,10 @@ use crate::StorageError;
 /// # Invariant
 ///
 /// Every nibble value is in `0..=15`. Constructors that accept raw bytes
-/// enforce this by construction. [`NibblePath::from_nibbles`] accepts a
-/// `Vec<u8>` and trusts the caller; debug assertions check the invariant.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// enforce this by construction. [`NibblePath::from_nibbles`] validates at
+/// runtime and returns `None` on invalid input; internal trie code uses
+/// [`NibblePath::from_nibbles_unchecked`] for paths that are provably valid.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NibblePath {
     /// Nibbles stored one per byte. Each value is in `0..=15`.
     nibbles: Vec<u8>,
@@ -71,14 +72,36 @@ impl NibblePath {
         Self { nibbles }
     }
 
-    /// Construct a `NibblePath` directly from a slice of nibble values.
+    /// Construct a `NibblePath` from a `Vec<u8>` of nibble values.
     ///
-    /// All values must be in `0..=15`. The invariant is checked with
-    /// `debug_assert!` — not enforced in release builds for performance.
-    pub fn from_nibbles(nibbles: Vec<u8>) -> Self {
+    /// Returns `None` if any value exceeds `15`. For paths derived from
+    /// [`from_bytes`] or internal trie splits (where the invariant is
+    /// guaranteed by construction), use [`from_nibbles_unchecked`] to avoid
+    /// the validation cost.
+    ///
+    /// [`from_bytes`]: NibblePath::from_bytes
+    /// [`from_nibbles_unchecked`]: NibblePath::from_nibbles_unchecked
+    pub fn from_nibbles(nibbles: Vec<u8>) -> Option<Self> {
+        if nibbles.iter().any(|&n| n > 15) {
+            return None;
+        }
+        Some(Self { nibbles })
+    }
+
+    /// Construct a `NibblePath` from nibbles without validation.
+    ///
+    /// # Invariant
+    ///
+    /// Caller guarantees every value is in `0..=15`. Only use this inside
+    /// `trie` module code where nibbles are produced by [`from_bytes`] or a
+    /// validated split — never for externally-sourced nibble sequences.
+    /// A `debug_assert!` enforces the invariant in debug builds.
+    ///
+    /// [`from_bytes`]: NibblePath::from_bytes
+    pub(crate) fn from_nibbles_unchecked(nibbles: Vec<u8>) -> Self {
         debug_assert!(
             nibbles.iter().all(|&n| n <= 15),
-            "nibble values must be in 0..=15",
+            "from_nibbles_unchecked: value > 15 found — caller violated invariant",
         );
         Self { nibbles }
     }
@@ -140,6 +163,32 @@ impl NibblePath {
     pub fn as_slice(&self) -> &[u8] {
         &self.nibbles
     }
+
+    /// Return a new `NibblePath` that is `self` followed by all nibbles of `other`.
+    ///
+    /// Used during trie restructuring when merging an Extension prefix with a
+    /// remaining path segment (e.g. when splitting an Extension node).
+    pub fn concat(&self, other: &NibblePath) -> Self {
+        let mut nibbles = Vec::with_capacity(self.nibbles.len() + other.nibbles.len());
+        nibbles.extend_from_slice(&self.nibbles);
+        nibbles.extend_from_slice(&other.nibbles);
+        Self { nibbles }
+    }
+
+    /// Return a new `NibblePath` with `nibble` prepended before all existing nibbles.
+    ///
+    /// `nibble` must be in `0..=15`. Used when reconstructing an Extension
+    /// node's prefix after a Branch split — the branching nibble becomes the
+    /// first element of the new Extension prefix.
+    ///
+    /// A `debug_assert!` enforces the nibble range in debug builds.
+    pub fn prepend_nibble(&self, nibble: u8) -> Self {
+        debug_assert!(nibble <= 15, "prepend_nibble: nibble > 15");
+        let mut nibbles = Vec::with_capacity(self.nibbles.len() + 1);
+        nibbles.push(nibble);
+        nibbles.extend_from_slice(&self.nibbles);
+        Self { nibbles }
+    }
 }
 
 // ─── TrieNode ─────────────────────────────────────────────────────────────────
@@ -167,7 +216,7 @@ impl NibblePath {
 /// Each node is stored in the `trie_nodes` column family keyed by
 /// `TrieNode::hash()`. Branch and Extension nodes reference their children
 /// by their hashes — never by in-memory pointers.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TrieNode {
     /// A 16-way branch node.
     ///
@@ -218,6 +267,17 @@ impl TrieNode {
     /// The returned [`Hash`] is used as:
     /// - The storage key in the `trie_nodes` column family.
     /// - A child reference in [`Branch`] and [`Extension`] nodes.
+    ///
+    /// # Serialization format (do not change — consensus-critical)
+    ///
+    /// - `NibblePath` serializes as a length-prefixed `Vec<u8>` (one nibble
+    ///   per byte, values 0–15).
+    /// - `Hash` serializes as a length-prefixed UTF-8 hex string (8 + 64
+    ///   bytes). This is Lemma's canonical binary format — **not** raw 32
+    ///   bytes. All Lemma nodes and SDKs use `lemma_core::Hash` which defines
+    ///   this encoding. Changing it breaks the consensus state root.
+    /// - This format is intentional and human-inspectable (same as
+    ///   `Account.code_hash` on disk — see `account/tests.rs` size pin).
     ///
     /// # Errors
     ///
@@ -282,6 +342,55 @@ impl TrieNode {
     /// [`Extension`]: TrieNode::Extension
     pub fn extension(prefix: NibblePath, child: Hash) -> Self {
         TrieNode::Extension { prefix, child }
+    }
+}
+
+// ─── TrieNode branch accessors ────────────────────────────────────────────────
+
+impl TrieNode {
+    /// Set child at `nibble` (0–15) of a [`Branch`] node to `hash`.
+    ///
+    /// Returns `Some(())` on success. Returns `None` if `self` is not a
+    /// Branch or `nibble > 15`.
+    ///
+    /// [`Branch`]: TrieNode::Branch
+    pub fn set_child(&mut self, nibble: usize, hash: Hash) -> Option<()> {
+        match self {
+            TrieNode::Branch { children, .. } => {
+                *children.get_mut(nibble)? = Some(hash);
+                Some(())
+            }
+            _ => None,
+        }
+    }
+
+    /// Get the child hash at `nibble` (0–15) of a [`Branch`] node.
+    ///
+    /// Returns `None` if `self` is not a Branch, `nibble > 15`, or the
+    /// child slot is empty (`None`).
+    ///
+    /// [`Branch`]: TrieNode::Branch
+    pub fn get_child(&self, nibble: usize) -> Option<Hash> {
+        match self {
+            TrieNode::Branch { children, .. } => *children.get(nibble)?,
+            _ => None,
+        }
+    }
+
+    /// Count the non-`None` children of a [`Branch`] node.
+    ///
+    /// Returns `None` if `self` is not a Branch. The trie delete algorithm
+    /// uses this to detect when a Branch has been reduced to a single child
+    /// and should be collapsed into an Extension node.
+    ///
+    /// [`Branch`]: TrieNode::Branch
+    pub fn child_count(&self) -> Option<usize> {
+        match self {
+            TrieNode::Branch { children, .. } => {
+                Some(children.iter().filter(|c| c.is_some()).count())
+            }
+            _ => None,
+        }
     }
 }
 

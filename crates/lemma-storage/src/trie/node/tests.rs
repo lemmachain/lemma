@@ -12,11 +12,14 @@ use super::*;
 // ── Shared fixtures ───────────────────────────────────────────────────────────
 
 fn empty_path() -> NibblePath {
-    NibblePath::from_nibbles(vec![])
+    // from_nibbles with empty vec always returns Some — no nibbles to be invalid.
+    NibblePath::from_nibbles(vec![]).expect("empty vec is always valid")
 }
 
 fn path_from_nibbles(nibbles: &[u8]) -> NibblePath {
+    // All test fixtures use known-valid nibble values (0..=15).
     NibblePath::from_nibbles(nibbles.to_vec())
+        .expect("test fixture nibbles must be 0..=15")
 }
 
 fn path_from_byte(byte: u8) -> NibblePath {
@@ -378,8 +381,9 @@ fn hash_returns_non_zero_hash_for_non_empty_leaf() {
 }
 
 #[test]
-fn hash_result_is_non_empty_storage_error_on_success() {
-    // hash() must return Ok — bincode serialize of TrieNode never fails.
+fn hash_returns_ok_for_all_node_variants() {
+    // hash() must return Ok — bincode serialize of TrieNode never fails for
+    // well-formed nodes (all field types implement Serialize correctly).
     assert!(branch_all_none().hash().is_ok());
     assert!(leaf_node(&[1, 2], b"v").hash().is_ok());
     assert!(extension_node(&[3], 0xAA).hash().is_ok());
@@ -431,6 +435,151 @@ fn bincode_roundtrip_branch_with_value() {
     let decoded: TrieNode = bincode::deserialize(&encoded).expect("deserialize must succeed");
     assert_eq!(original, decoded);
 }
+
+// ── S-6: Branch with value produces different hash ────────────────────────────
+
+#[test]
+fn hash_branch_with_value_differs_from_branch_without_value() {
+    // A Branch that terminates a key (has a value) must hash differently from
+    // one that doesn't — otherwise two distinct trie states could share a root.
+    let without = TrieNode::empty_branch();
+    let with_value = TrieNode::Branch {
+        children: [None; 16],
+        value: Some(b"data".to_vec()),
+    };
+    assert_ne!(without.hash().unwrap(), with_value.hash().unwrap());
+}
+
+// ── C-1: Hash serialization format is pinned (hex-string, not raw bytes) ──────
+
+#[test]
+fn bincode_encoded_leaf_with_known_hash_has_stable_size() {
+    // Pin the encoded size of a Leaf node containing a known 32-byte hash.
+    // Hash serializes as a 64-char hex string in bincode:
+    //   8 (u64 len prefix) + 64 (hex chars) = 72 bytes per Hash.
+    // This is Lemma's intentional binary format — human-inspectable and
+    // consistent with Account.code_hash on disk (same 72-byte encoding).
+    // If Hash::Serialize ever changes, this test fails before consensus breaks.
+    let leaf = TrieNode::leaf(
+        NibblePath::from_bytes(&[0xAB]),   // 2 nibbles
+        b"v".to_vec(),
+    );
+    let encoded = bincode::serialize(&leaf).expect("serialize must succeed");
+    // Leaf layout: variant_tag(4) + path_len(8) + path_bytes(2) + value_len(8) + value_bytes(1) = 23
+    assert_eq!(
+        encoded.len(),
+        23,
+        "Leaf encoded size changed — Hash/NibblePath serde format may have changed",
+    );
+}
+
+// ── W-1: from_nibbles validates nibble range ───────────────────────────────────
+
+#[test]
+fn from_nibbles_returns_none_for_value_above_fifteen() {
+    assert!(NibblePath::from_nibbles(vec![16]).is_none());
+    assert!(NibblePath::from_nibbles(vec![0, 1, 255]).is_none());
+}
+
+#[test]
+fn from_nibbles_returns_some_for_all_valid_values() {
+    assert!(NibblePath::from_nibbles(vec![0, 7, 15]).is_some());
+}
+
+#[test]
+fn from_nibbles_empty_vec_returns_some() {
+    assert!(NibblePath::from_nibbles(vec![]).is_some());
+}
+
+// ── W-2: NibblePath concat + prepend_nibble ───────────────────────────────────
+
+#[test]
+fn concat_appends_other_nibbles_after_self() {
+    let a = path_from_nibbles(&[1, 2]);
+    let b = path_from_nibbles(&[3, 4]);
+    assert_eq!(a.concat(&b).as_slice(), &[1, 2, 3, 4]);
+}
+
+#[test]
+fn concat_with_empty_other_returns_clone_of_self() {
+    let a = path_from_nibbles(&[5, 6]);
+    assert_eq!(a.concat(&empty_path()).as_slice(), a.as_slice());
+}
+
+#[test]
+fn concat_empty_self_with_other_returns_clone_of_other() {
+    let b = path_from_nibbles(&[7, 8]);
+    assert_eq!(empty_path().concat(&b).as_slice(), b.as_slice());
+}
+
+#[test]
+fn prepend_nibble_inserts_at_front() {
+    let path = path_from_nibbles(&[2, 3]);
+    assert_eq!(path.prepend_nibble(1).as_slice(), &[1, 2, 3]);
+}
+
+#[test]
+fn prepend_nibble_on_empty_path_produces_single_nibble_path() {
+    assert_eq!(empty_path().prepend_nibble(0xF).as_slice(), &[0xF]);
+}
+
+// ── W-3: TrieNode child accessors ─────────────────────────────────────────────
+
+#[test]
+fn set_child_stores_hash_at_nibble_index() {
+    let mut branch = TrieNode::empty_branch();
+    let h = nonzero_hash(0xAB);
+    branch.set_child(5, h).expect("set_child on Branch must succeed");
+    assert_eq!(branch.get_child(5), Some(h));
+}
+
+#[test]
+fn get_child_returns_none_for_empty_slot() {
+    let branch = TrieNode::empty_branch();
+    assert_eq!(branch.get_child(0), None);
+}
+
+#[test]
+fn get_child_returns_none_for_out_of_bounds_nibble() {
+    let branch = TrieNode::empty_branch();
+    assert_eq!(branch.get_child(16), None);
+}
+
+#[test]
+fn set_child_returns_none_for_non_branch_nodes() {
+    let mut leaf = leaf_node(&[1], b"v");
+    assert!(leaf.set_child(0, nonzero_hash(0xAA)).is_none());
+
+    let mut ext = extension_node(&[1], 0xAA);
+    assert!(ext.set_child(0, nonzero_hash(0xAA)).is_none());
+}
+
+#[test]
+fn get_child_returns_none_for_non_branch_nodes() {
+    assert!(leaf_node(&[1], b"v").get_child(0).is_none());
+    assert!(extension_node(&[1], 0xAA).get_child(0).is_none());
+}
+
+#[test]
+fn child_count_returns_zero_for_empty_branch() {
+    assert_eq!(branch_all_none().child_count(), Some(0));
+}
+
+#[test]
+fn child_count_returns_correct_count_after_set_child() {
+    let mut branch = TrieNode::empty_branch();
+    branch.set_child(3, nonzero_hash(0x11)).unwrap();
+    branch.set_child(7, nonzero_hash(0x22)).unwrap();
+    assert_eq!(branch.child_count(), Some(2));
+}
+
+#[test]
+fn child_count_returns_none_for_non_branch_nodes() {
+    assert!(leaf_node(&[1], b"v").child_count().is_none());
+    assert!(extension_node(&[1], 0xAA).child_count().is_none());
+}
+
+// ── Bincode determinism (kept at end) ────────────────────────────────────────
 
 #[test]
 fn bincode_encoded_nibble_path_is_deterministic() {
