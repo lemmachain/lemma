@@ -174,8 +174,6 @@ pub enum StorageError {
     SerializationFailed { reason: String },
 }
 
-// ─── From conversions ─────────────────────────────────────────────────────────
-
 // ─── Constructors ─────────────────────────────────────────────────────────────
 
 impl StorageError {

@@ -28,7 +28,7 @@ fn open_temp_db() -> (LemmaDb, tempfile::TempDir) {
 
 #[test]
 fn open_creates_database_at_fresh_path() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("tempdir creation must succeed");
     let result = LemmaDb::open(dir.path());
     assert!(result.is_ok(), "open should succeed on a fresh directory: {result:?}");
 }
@@ -36,7 +36,7 @@ fn open_creates_database_at_fresh_path() {
 #[test]
 fn open_existing_database_reopens_cleanly() {
     // Open once to create, open again to verify idempotency.
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("tempdir creation must succeed");
     let _ = LemmaDb::open(dir.path()).expect("first open must succeed");
     let result = LemmaDb::open(dir.path());
     assert!(result.is_ok(), "reopening an existing database must succeed: {result:?}");
@@ -44,17 +44,17 @@ fn open_existing_database_reopens_cleanly() {
 
 #[test]
 fn open_preserves_data_across_reopen() {
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("tempdir creation must succeed");
 
-    // Write in first session.
     {
-        let db = LemmaDb::open(dir.path()).unwrap();
-        db.put(CF_METADATA, b"key", b"value").unwrap();
-    }
+        // Drop `db` before reopening — RocksDB requires exclusive access.
+        let db = LemmaDb::open(dir.path()).expect("first open must succeed");
+        db.put(CF_METADATA, b"key", b"value").expect("put must succeed");
+    } // `db` dropped here, releasing the RocksDB lock
 
     // Read back in second session.
-    let db2 = LemmaDb::open(dir.path()).unwrap();
-    let val = db2.get(CF_METADATA, b"key").unwrap();
+    let db2 = LemmaDb::open(dir.path()).expect("second open must succeed");
+    let val = db2.get(CF_METADATA, b"key").expect("get must succeed");
     assert_eq!(val, Some(b"value".to_vec()));
 }
 
@@ -66,9 +66,9 @@ fn open_regular_file_path_produces_database_error() {
     // RocksDB expects a directory; passing a file causes it to emit an error,
     // which our From<rocksdb::Error> impl converts to StorageError::Database.
     // This closes issue #3 deferred from error/tests.rs.
-    let dir = tempdir().unwrap();
+    let dir = tempdir().expect("tempdir creation must succeed");
     let file_path = dir.path().join("not_a_directory.txt");
-    std::fs::write(&file_path, b"I am a file").unwrap();
+    std::fs::write(&file_path, b"I am a file").expect("test file write must succeed");
 
     let result = LemmaDb::open(&file_path);
     assert!(
@@ -84,7 +84,7 @@ fn all_column_families_are_accessible_after_open() {
     let (db, _dir) = open_temp_db();
 
     // One round-trip per CF — if any CF is missing, put/get returns Err.
-    for cf_name in ALL_CFS {
+    for &cf_name in ALL_CFS {
         let result = db.put(cf_name, b"probe", b"1");
         assert!(
             result.is_ok(),
@@ -203,7 +203,7 @@ fn delete_removes_key_from_correct_column_family_only() {
 #[test]
 fn write_batch_commits_multiple_puts() {
     let (db, _dir) = open_temp_db();
-    let mut batch = LemmaDb::new_batch();
+    let mut batch = db.new_batch();
     db.batch_put(&mut batch, CF_BLOCKS, &1u64.to_be_bytes(), b"block_1").unwrap();
     db.batch_put(&mut batch, CF_BLOCKS, &2u64.to_be_bytes(), b"block_2").unwrap();
     db.batch_put(&mut batch, CF_BLOCKS, &3u64.to_be_bytes(), b"block_3").unwrap();
@@ -222,7 +222,7 @@ fn write_batch_spans_multiple_column_families() {
     let height_key = 42u64.to_be_bytes();
     let tx_hash = [0xabu8; 32];
 
-    let mut batch = LemmaDb::new_batch();
+    let mut batch = db.new_batch();
     db.batch_put(&mut batch, CF_BLOCKS, &height_key, b"block_bytes").unwrap();
     db.batch_put(&mut batch, CF_RECEIPTS, &tx_hash, b"receipt_bytes").unwrap();
     db.batch_put(&mut batch, CF_METADATA, b"latest_height", &height_key).unwrap();
@@ -238,7 +238,7 @@ fn write_batch_delete_removes_key() {
     let (db, _dir) = open_temp_db();
     db.put(CF_TRIE_NODES, b"node_hash", b"node_bytes").unwrap();
 
-    let mut batch = LemmaDb::new_batch();
+    let mut batch = db.new_batch();
     db.batch_delete(&mut batch, CF_TRIE_NODES, b"node_hash").unwrap();
     db.write_batch(batch).unwrap();
 
@@ -249,7 +249,7 @@ fn write_batch_delete_removes_key() {
 fn empty_write_batch_succeeds() {
     // Committing a zero-operation batch is valid — must not error.
     let (db, _dir) = open_temp_db();
-    let batch = LemmaDb::new_batch();
+    let batch = db.new_batch();
     let result = db.write_batch(batch);
     assert!(result.is_ok(), "empty batch commit must succeed: {result:?}");
 }
@@ -259,7 +259,7 @@ fn write_batch_put_then_delete_same_key_results_in_absence() {
     // Stage a put then a delete for the same key in the same batch.
     // RocksDB applies operations in order — the delete wins.
     let (db, _dir) = open_temp_db();
-    let mut batch = LemmaDb::new_batch();
+    let mut batch = db.new_batch();
     db.batch_put(&mut batch, CF_STATE, b"k", b"v").unwrap();
     db.batch_delete(&mut batch, CF_STATE, b"k").unwrap();
     db.write_batch(batch).unwrap();
@@ -267,18 +267,72 @@ fn write_batch_put_then_delete_same_key_results_in_absence() {
     assert_eq!(db.get(CF_STATE, b"k").unwrap(), None);
 }
 
-// ── new_batch is a static constructor ────────────────────────────────────────
+// ── new_batch is tied to DB instance ─────────────────────────────────────────
 
 #[test]
 fn new_batch_produces_empty_batch() {
-    // We can't inspect a WriteBatch directly, but we can verify that committing
-    // it without staging any ops leaves the DB unchanged.
+    // `WriteBatch` in rocksdb 0.24 has no public `is_empty()` — verify
+    // indirectly: committing an empty batch must leave existing data unchanged.
     let (db, _dir) = open_temp_db();
     db.put(CF_STATE, b"sentinel", b"present").unwrap();
 
-    let batch = LemmaDb::new_batch();
+    let batch = db.new_batch();
     db.write_batch(batch).unwrap();
 
     // Sentinel must still be there — empty batch changed nothing.
     assert_eq!(db.get(CF_STATE, b"sentinel").unwrap(), Some(b"present".to_vec()));
+}
+
+// ── ColumnFamilyNotFound — negative-path coverage ────────────────────────────
+
+#[test]
+fn get_unknown_column_family_returns_column_family_not_found() {
+    let (db, _dir) = open_temp_db();
+    let result = db.get("unknown_cf", b"key");
+    assert!(
+        matches!(result, Err(StorageError::ColumnFamilyNotFound { name: "unknown_cf" })),
+        "expected ColumnFamilyNotFound, got: {result:?}",
+    );
+}
+
+#[test]
+fn put_unknown_column_family_returns_column_family_not_found() {
+    let (db, _dir) = open_temp_db();
+    let result = db.put("unknown_cf", b"key", b"value");
+    assert!(
+        matches!(result, Err(StorageError::ColumnFamilyNotFound { name: "unknown_cf" })),
+        "expected ColumnFamilyNotFound, got: {result:?}",
+    );
+}
+
+#[test]
+fn delete_unknown_column_family_returns_column_family_not_found() {
+    let (db, _dir) = open_temp_db();
+    let result = db.delete("unknown_cf", b"key");
+    assert!(
+        matches!(result, Err(StorageError::ColumnFamilyNotFound { name: "unknown_cf" })),
+        "expected ColumnFamilyNotFound, got: {result:?}",
+    );
+}
+
+#[test]
+fn batch_put_unknown_column_family_returns_column_family_not_found() {
+    let (db, _dir) = open_temp_db();
+    let mut batch = db.new_batch();
+    let result = db.batch_put(&mut batch, "unknown_cf", b"key", b"value");
+    assert!(
+        matches!(result, Err(StorageError::ColumnFamilyNotFound { name: "unknown_cf" })),
+        "expected ColumnFamilyNotFound, got: {result:?}",
+    );
+}
+
+#[test]
+fn batch_delete_unknown_column_family_returns_column_family_not_found() {
+    let (db, _dir) = open_temp_db();
+    let mut batch = db.new_batch();
+    let result = db.batch_delete(&mut batch, "unknown_cf", b"key");
+    assert!(
+        matches!(result, Err(StorageError::ColumnFamilyNotFound { name: "unknown_cf" })),
+        "expected ColumnFamilyNotFound, got: {result:?}",
+    );
 }

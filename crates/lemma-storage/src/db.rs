@@ -167,6 +167,11 @@ impl LemmaDb {
     /// `Ok(None)` into domain-specific errors like
     /// [`StorageError::AccountNotFound`].
     ///
+    /// `cf_name` must be one of the 8 column family constants declared in
+    /// this module (`CF_STATE`, `CF_BLOCKS`, etc.). The `&'static str` bound
+    /// is intentional — column family names are compile-time constants, not
+    /// runtime strings.
+    ///
     /// # Errors
     ///
     /// - [`StorageError::ColumnFamilyNotFound`] — `cf_name` is not one of the
@@ -186,12 +191,16 @@ impl LemmaDb {
     /// If `key` already exists its value is overwritten. For multi-key
     /// updates that must be atomic, prefer [`write_batch`].
     ///
+    /// `cf_name` must be one of the 8 column family constants (`CF_STATE`,
+    /// `CF_BLOCKS`, etc.) — see [`get`] for the full constraint explanation.
+    ///
     /// # Errors
     ///
     /// - [`StorageError::ColumnFamilyNotFound`] — unknown `cf_name`.
     /// - [`StorageError::Database`] — RocksDB I/O failure.
     ///
     /// [`write_batch`]: LemmaDb::write_batch
+    /// [`get`]: LemmaDb::get
     pub fn put(
         &self,
         cf_name: &'static str,
@@ -206,10 +215,15 @@ impl LemmaDb {
     ///
     /// If `key` does not exist this is a no-op — not an error.
     ///
+    /// `cf_name` must be one of the 8 column family constants (`CF_STATE`,
+    /// `CF_BLOCKS`, etc.) — see [`get`] for the full constraint explanation.
+    ///
     /// # Errors
     ///
     /// - [`StorageError::ColumnFamilyNotFound`] — unknown `cf_name`.
     /// - [`StorageError::Database`] — RocksDB I/O failure.
+    ///
+    /// [`get`]: LemmaDb::get
     pub fn delete(&self, cf_name: &'static str, key: &[u8]) -> Result<(), StorageError> {
         let cf = self.resolve_cf(cf_name)?;
         Ok(self.db.delete_cf(&cf, key)?)
@@ -217,7 +231,11 @@ impl LemmaDb {
 
     // ── Batch operations ──────────────────────────────────────────────────────
 
-    /// Create a new empty write batch.
+    /// Create a new empty write batch tied to this database instance.
+    ///
+    /// Taking `&self` ensures the batch is always committed to the same
+    /// `LemmaDb` that staged its operations — prevents staging ops against
+    /// `db_a` and accidentally committing via `db_b`.
     ///
     /// Accumulate operations with [`batch_put`] / [`batch_delete`], then
     /// commit atomically with [`write_batch`].
@@ -225,7 +243,7 @@ impl LemmaDb {
     /// [`batch_put`]: LemmaDb::batch_put
     /// [`batch_delete`]: LemmaDb::batch_delete
     /// [`write_batch`]: LemmaDb::write_batch
-    pub fn new_batch() -> WriteBatch {
+    pub fn new_batch(&self) -> WriteBatch {
         WriteBatch::default()
     }
 
