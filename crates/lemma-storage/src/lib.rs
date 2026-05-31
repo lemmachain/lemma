@@ -17,9 +17,11 @@
 //! | `state` *(Step 7)* | [`WorldState`] — typed account + contract storage access |
 //! | `snapshot` *(Step 8)* | State snapshots for crash recovery |
 
+pub mod account;
 pub mod db;
 pub mod error;
 
+pub use account::Account;
 pub use db::{
     LemmaDb, CF_BLOCK_HASH, CF_BLOCKS, CF_METADATA, CF_RECEIPTS, CF_STATE, CF_STORAGE,
     CF_TRANSACTIONS, CF_TRIE_NODES,
