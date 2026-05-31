@@ -326,3 +326,83 @@ fn bincode_encoded_bytes_are_deterministic() {
     let enc2 = bincode::serialize(&acc).unwrap();
     assert_eq!(enc1, enc2);
 }
+
+#[test]
+fn bincode_encoded_size_is_stable() {
+    // Pin the encoded byte length so any accidental change to Amount/Hash
+    // serde is caught before it silently corrupts all RocksDB data.
+    //
+    // Default account layout (bincode, all fields are string-serialized):
+    //   nonce:        8 bytes (u64 LE)
+    //   balance:      8 (len prefix) + 1 ("0") = 9 bytes
+    //   code_hash:    8 (len prefix) + 64 (hex) = 72 bytes
+    //   storage_root: 8 (len prefix) + 64 (hex) = 72 bytes
+    //   staked:       8 (len prefix) + 1 ("0") = 9 bytes
+    //   Total: 8 + 9 + 72 + 72 + 9 = 170 bytes
+    //
+    // If this assertion fails, the on-disk format has changed and a
+    // storage migration is required before shipping.
+    let acc = Account::default();
+    let encoded = bincode::serialize(&acc).expect("serialize must succeed");
+    assert_eq!(
+        encoded.len(),
+        170,
+        "encoded size changed — on-disk format may be incompatible with existing data",
+    );
+}
+
+// ── available_balance ─────────────────────────────────────────────────────────
+
+#[test]
+fn available_balance_returns_liquid_balance_only() {
+    // An account with both balance and staked: only balance is spendable.
+    let acc = Account {
+        nonce: 0,
+        balance: Amount::from_drop(1_000),
+        code_hash: Hash::zero(),
+        storage_root: Hash::zero(),
+        staked: Amount::from_drop(5_000),
+    };
+    assert_eq!(acc.available_balance(), Amount::from_drop(1_000));
+}
+
+#[test]
+fn available_balance_is_zero_when_only_staked_is_nonzero() {
+    // Zero liquid balance + large staked → available_balance = 0.
+    // Guards against callers using balance + staked for transfer validation.
+    let acc = Account {
+        nonce: 0,
+        balance: Amount::zero(),
+        code_hash: Hash::zero(),
+        storage_root: Hash::zero(),
+        staked: Amount::from_drop(32_000_000_000_000_000_000), // 32 LEM staked
+    };
+    assert!(acc.available_balance().is_zero());
+}
+
+// ── S5: is_zero_balance on contract account ────────────────────────────────────
+
+#[test]
+fn is_zero_balance_returns_true_for_contract_with_zero_balance() {
+    // A freshly deployed contract has zero balance — is_zero_balance must
+    // return true regardless of account type.
+    let acc = contract_with_code([0xab; 32]);
+    assert!(acc.is_zero_balance());
+}
+
+// ── S6: bincode roundtrip for EOA with non-zero staked ────────────────────────
+
+#[test]
+fn bincode_roundtrip_eoa_with_staked_balance() {
+    // Validator's EOA: liquid balance + staked (real-world mainnet state).
+    let original = Account {
+        nonce: 42,
+        balance: Amount::from_drop(1_000_000),
+        code_hash: Hash::zero(),
+        storage_root: Hash::zero(),
+        staked: Amount::from_drop(32_000_000_000_000_000_000), // 32 LEM
+    };
+    let encoded = bincode::serialize(&original).expect("serialize must succeed");
+    let decoded: Account = bincode::deserialize(&encoded).expect("deserialize must succeed");
+    assert_eq!(original, decoded);
+}

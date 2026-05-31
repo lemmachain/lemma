@@ -89,8 +89,16 @@ pub struct Account {
     /// Non-transferable while bonded or unbonding. The four-bucket unbonding
     /// detail (`pending_active`, `pending_inactive`, etc.) lives in
     /// [`lemma_core::Stake`] on the validator record. This field is the
-    /// account-level summary: `effective_balance = balance + staked`.
+    /// account-level summary of locked LEM.
     ///
+    /// **Only [`balance`] is available for transfers and gas payment** —
+    /// `staked` is locked and must never be counted as spendable. The total
+    /// LEM held by this account (liquid + locked) is
+    /// `balance.checked_add(staked)`, but callers that need the spendable
+    /// amount must use [`available_balance`].
+    ///
+    /// [`balance`]: Account::balance
+    /// [`available_balance`]: Account::available_balance
     /// [`lemma_core::Stake`]: lemma_core::Stake
     pub staked: Amount,
 }
@@ -178,6 +186,19 @@ impl Account {
     /// Use `account.staked.is_zero()` to check staked balance separately.
     pub fn is_zero_balance(&self) -> bool {
         self.balance.is_zero()
+    }
+
+    /// Returns the liquid balance available for transfers and gas payment.
+    ///
+    /// This is always `balance` — `staked` LEM is locked and cannot be
+    /// spent until fully unbonded. Callers **must** use this method (not
+    /// `balance + staked`) when validating whether a transfer is affordable.
+    ///
+    /// To compute total LEM held (liquid + locked) use
+    /// `account.balance.checked_add(account.staked)` explicitly — the
+    /// intentional verbosity discourages accidental use as a spendable amount.
+    pub fn available_balance(&self) -> Amount {
+        self.balance
     }
 }
 
