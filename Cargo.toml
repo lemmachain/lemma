@@ -51,6 +51,9 @@ rand = "0.8.6"
 # Storage
 rocksdb = "0.24"
 
+# Testing utilities
+tempfile = "3.10"
+
 # Networking (0.56 is tokio-only — async-std removed)
 libp2p = { version = "0.56", features = [
     "tokio", "tcp", "noise", "yamux", "gossipsub",
