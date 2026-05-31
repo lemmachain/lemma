@@ -8,7 +8,7 @@ use std::path::Path;
 use tempfile::tempdir;
 
 use super::*;
-use crate::{db::LemmaDb, state::WorldState, Account};
+use crate::{db::LemmaDb, state::WorldState, Account, StorageError};
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -263,8 +263,105 @@ fn restore_path_points_to_openable_db() {
 
     mgr.create_snapshot(&db, &meta(777)).expect("create must succeed");
 
-    let path = mgr.restore_path(777);
+    let path = mgr.restore_path(777).expect("restore_path must succeed for existing snapshot");
     let _db2 = LemmaDb::open(&path).expect("restore_path must point to an openable LemmaDb");
+}
+
+#[test]
+fn restore_path_for_nonexistent_height_returns_error() {
+    let snap_dir = tempdir().expect("tempdir must succeed");
+    let mgr = manager(snap_dir.path());
+    let result = mgr.restore_path(9999);
+    assert!(
+        matches!(result, Err(StorageError::RestoreFailed { .. })),
+        "restore_path for nonexistent height must return RestoreFailed, got: {result:?}",
+    );
+}
+
+// ── T1: Writes after checkpoint are NOT visible in the checkpoint ─────────────
+
+#[test]
+fn create_checkpoint_excludes_writes_made_after_checkpoint() {
+    use lemma_core::{Address, Amount};
+
+    let db_dir = tempdir().expect("tempdir for db must succeed");
+    let ckpt_dir = tempdir().expect("tempdir for checkpoint must succeed");
+
+    let addr_before = Address::from_public_key(&[0x01u8; 32]);
+    let addr_after  = Address::from_public_key(&[0x02u8; 32]);
+
+    // Write addr_before, commit, take checkpoint, then write addr_after.
+    let state_root = {
+        let db = open_db(db_dir.path());
+        let mut ws = WorldState::new(db);
+        ws.put_account(&addr_before, &Account::new_eoa(Amount::from_drop(1)))
+            .expect("put addr_before must succeed");
+        ws.commit().expect("commit must succeed")
+    };
+
+    let ckpt_path = ckpt_dir.path().join("ckpt");
+    {
+        let db = open_db(db_dir.path());
+        db.create_checkpoint(&ckpt_path).expect("checkpoint must succeed");
+        // Write addr_after AFTER the checkpoint — must not appear in checkpoint.
+        let mut ws = WorldState::with_state_root(db, state_root);
+        ws.put_account(&addr_after, &Account::new_eoa(Amount::from_drop(2)))
+            .expect("put addr_after must succeed");
+    }
+
+    let ckpt_db = open_db(&ckpt_path);
+    let ws = WorldState::with_state_root(ckpt_db, state_root);
+    assert!(
+        ws.get_account(&addr_before).expect("get must succeed").is_some(),
+        "checkpoint must contain writes made BEFORE checkpoint",
+    );
+    assert!(
+        ws.get_account(&addr_after).expect("get must succeed").is_none(),
+        "checkpoint must NOT contain writes made AFTER checkpoint",
+    );
+}
+
+// ── T2: list_snapshots skips orphaned dirs (missing metadata.json) ────────────
+
+#[test]
+fn list_snapshots_skips_directory_with_missing_metadata_json() {
+    let db_dir = tempdir().expect("tempdir for db must succeed");
+    let snap_dir = tempdir().expect("tempdir for snapshots must succeed");
+    let db = open_db(db_dir.path());
+    let mgr = SnapshotManager::new(snap_dir.path(), 0).expect("new must succeed");
+
+    // Create a valid snapshot at height 100.
+    mgr.create_snapshot(&db, &meta(100)).expect("create must succeed");
+
+    // Manually create a snapshot directory at height 200 with no metadata.json
+    // (simulates a crash mid-write before metadata was written).
+    let orphan = snap_dir.path().join("snapshot_000000000200");
+    std::fs::create_dir(&orphan).expect("mkdir must succeed");
+
+    // list_snapshots must return only the valid snapshot, silently skipping orphan.
+    let list = mgr.list_snapshots().expect("list must succeed");
+    assert_eq!(list.len(), 1, "orphaned directory without metadata.json must be skipped");
+    assert_eq!(list[0].height, 100);
+}
+
+// ── T3: prune with exactly max_snapshots (boundary — nothing pruned) ──────────
+
+#[test]
+fn prune_with_exactly_max_snapshots_removes_nothing() {
+    let db_dir = tempdir().expect("tempdir for db must succeed");
+    let snap_dir = tempdir().expect("tempdir for snapshots must succeed");
+    let db = open_db(db_dir.path());
+    // Use max_snapshots=0 to prevent auto-pruning during creates.
+    let mgr_no_prune = SnapshotManager::new(snap_dir.path(), 0).expect("new must succeed");
+    mgr_no_prune.create_snapshot(&db, &meta(100)).expect("create 100 must succeed");
+    mgr_no_prune.create_snapshot(&db, &meta(200)).expect("create 200 must succeed");
+    mgr_no_prune.create_snapshot(&db, &meta(300)).expect("create 300 must succeed");
+
+    // Now prune with max_snapshots=3 — exactly 3 exist, so nothing should be removed.
+    let mgr3 = SnapshotManager::new(snap_dir.path(), 3).expect("new must succeed");
+    let removed = mgr3.prune().expect("prune must succeed");
+    assert_eq!(removed, 0, "exactly max_snapshots snapshots exist — nothing should be pruned");
+    assert_eq!(mgr3.list_snapshots().expect("list must succeed").len(), 3);
 }
 
 // ── SnapshotManager::prune ────────────────────────────────────────────────────

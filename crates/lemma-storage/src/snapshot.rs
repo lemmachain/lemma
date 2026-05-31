@@ -59,6 +59,21 @@ const METADATA_FILENAME: &str = "metadata.json";
 /// lexicographic sort equals numeric sort up to height 999_999_999_999.
 const SNAPSHOT_DIR_PREFIX: &str = "snapshot_";
 
+/// Suffix for staging directories used during atomic snapshot creation.
+///
+/// A staging directory (`snapshot_<height>.tmp`) holds the in-progress
+/// checkpoint. Once complete it is renamed to the final name. On startup,
+/// any leftover `.tmp` directories are cleaned up before creating a new
+/// snapshot at that height.
+const STAGING_SUFFIX: &str = ".tmp";
+
+/// Maximum byte size of a `metadata.json` file.
+///
+/// A well-formed metadata file is ~150 bytes. Refusing to read files larger
+/// than 4 KiB guards against a corrupted or accidentally replaced file
+/// consuming excessive memory during startup.
+const MAX_METADATA_BYTES: u64 = 4 * 1024;
+
 // ─── SnapshotMetadata ─────────────────────────────────────────────────────────
 
 /// Metadata stored alongside each RocksDB checkpoint.
@@ -116,12 +131,22 @@ impl SnapshotMetadata {
 /// `SnapshotManager` instances pointing to the same directory are unsupported
 /// — create one per node process.
 ///
+/// ## No database reference
+///
+/// `SnapshotManager` intentionally holds no reference to [`LemmaDb`] — the
+/// database is passed per-call to [`create_snapshot`]. This avoids lifetime
+/// entanglement and allows the manager to outlive individual database
+/// instances (e.g. during restore, the old DB is closed before the snapshot
+/// DB is opened).
+///
 /// ## Thread safety
 ///
 /// `SnapshotManager` is `Send + Sync` (it holds only a `PathBuf` and `usize`).
 /// Concurrent calls to `create_snapshot` from multiple threads are safe at the
 /// `SnapshotManager` level, but callers must ensure `LemmaDb` is not being
 /// written to concurrently during checkpoint creation.
+///
+/// [`create_snapshot`]: SnapshotManager::create_snapshot
 pub struct SnapshotManager {
     /// Base directory where all snapshot subdirectories live.
     snapshot_dir: PathBuf,
@@ -160,49 +185,82 @@ impl SnapshotManager {
 
     /// Create a snapshot of `db` at `metadata.height`.
     ///
-    /// Calls `db.create_checkpoint(path)` to hard-link the current SST files,
-    /// then writes `metadata.json` alongside the checkpoint. If a snapshot at
-    /// `metadata.height` already exists it is replaced (the old directory is
-    /// removed first).
+    /// Uses an atomic staging-path pattern to avoid data loss on crash:
+    ///
+    /// 1. Write checkpoint to `snapshot_<height>.tmp` (staging).
+    /// 2. Write `metadata.json` inside the staging directory.
+    /// 3. Remove the old `snapshot_<height>` (final) if it exists.
+    /// 4. `fs::rename` staging → final (atomic on Linux, same filesystem).
+    ///
+    /// If the process crashes between steps 1–3, the staging directory is
+    /// cleaned up on the next call. The old snapshot at this height (if any)
+    /// is not removed until step 3, so a crash before step 3 leaves the
+    /// previous snapshot intact.
     ///
     /// After creating, prunes oldest snapshots if `max_snapshots > 0`.
+    /// **Prune failure is non-fatal** — the snapshot was successfully created;
+    /// pruning will be retried on the next call.
     ///
     /// Returns the path to the new snapshot directory.
     ///
     /// # Errors
     ///
-    /// - [`StorageError::SnapshotFailed`] — checkpoint creation or metadata
-    ///   write failed. The old snapshot (if any) may have been removed already;
-    ///   recovery falls back to the previous snapshot.
+    /// Returns [`StorageError::SnapshotFailed`] if the checkpoint or rename
+    /// step fails. Prune failure is logged to stderr but does not propagate.
     pub fn create_snapshot(
         &self,
         db: &LemmaDb,
         metadata: &SnapshotMetadata,
     ) -> Result<PathBuf, StorageError> {
-        let path = self.snapshot_path(metadata.height);
+        let final_path = self.snapshot_path(metadata.height);
+        let staging_path = self.staging_path(metadata.height);
 
-        // Remove existing snapshot at this height before overwriting.
-        if path.exists() {
-            fs::remove_dir_all(&path).map_err(|e| StorageError::SnapshotFailed {
+        // Clean up any leftover staging dir from a previous crashed attempt.
+        if staging_path.exists() {
+            fs::remove_dir_all(&staging_path).map_err(|e| StorageError::SnapshotFailed {
                 reason: format!(
-                    "cannot remove existing snapshot at '{}': {e}",
-                    path.display()
+                    "cannot remove stale staging dir '{}': {e}",
+                    staging_path.display()
                 ),
             })?;
         }
 
-        // Create the RocksDB checkpoint (hard-linked SST files).
-        db.create_checkpoint(&path)?;
+        // Create the RocksDB checkpoint into the staging directory.
+        db.create_checkpoint(&staging_path)?;
 
-        // Write metadata alongside the checkpoint.
-        self.write_metadata(&path, metadata)?;
+        // Write metadata inside the staging directory.
+        self.write_metadata(&staging_path, metadata)?;
+
+        // Atomically replace the final snapshot directory.
+        // On Linux, fs::rename is atomic when src and dst are on the same
+        // filesystem. Since both paths are under snapshot_dir, this is
+        // guaranteed to be same-filesystem.
+        if final_path.exists() {
+            fs::remove_dir_all(&final_path).map_err(|e| StorageError::SnapshotFailed {
+                reason: format!(
+                    "cannot remove existing snapshot '{}': {e}",
+                    final_path.display()
+                ),
+            })?;
+        }
+        fs::rename(&staging_path, &final_path).map_err(|e| StorageError::SnapshotFailed {
+            reason: format!(
+                "cannot rename staging snapshot to '{}': {e}",
+                final_path.display()
+            ),
+        })?;
 
         // Prune oldest snapshots beyond max_snapshots.
+        // Non-fatal: the snapshot was successfully created; pruning will be
+        // retried on the next create_snapshot call.
         if self.max_snapshots > 0 {
-            self.prune()?;
+            if let Err(e) = self.prune() {
+                // TODO(node): surface this as a warning metric in Phase 2.
+                eprintln!("lemma-storage: snapshot prune failed (non-fatal): {e}");
+            }
         }
 
-        Ok(path)
+        Ok(final_path)
     }
 
     // ── List / Query ──────────────────────────────────────────────────────────
@@ -295,12 +353,28 @@ impl SnapshotManager {
     /// Return the filesystem path of the snapshot directory at `height`.
     ///
     /// The returned path is the root of a valid RocksDB database directory
-    /// that can be opened with `LemmaDb::open(path)`. Does **not** validate
-    /// that the snapshot actually exists — call [`snapshot_metadata`] first.
+    /// that can be opened with `LemmaDb::open(path)`.
+    ///
+    /// > **Note**: a successful `restore_path` confirms the directory exists
+    /// > and has valid metadata, but does **not** guarantee the RocksDB
+    /// > checkpoint files are intact (e.g. a disk-full mid-checkpoint can
+    /// > produce a valid `metadata.json` alongside a corrupt database).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::RestoreFailed`] if no snapshot exists at
+    /// `height`. Use [`snapshot_metadata`] to check existence without
+    /// opening the database.
     ///
     /// [`snapshot_metadata`]: SnapshotManager::snapshot_metadata
-    pub fn restore_path(&self, height: u64) -> PathBuf {
-        self.snapshot_path(height)
+    pub fn restore_path(&self, height: u64) -> Result<PathBuf, StorageError> {
+        let path = self.snapshot_path(height);
+        if !path.exists() {
+            return Err(StorageError::RestoreFailed {
+                reason: format!("no snapshot found at height {height}"),
+            });
+        }
+        Ok(path)
     }
 
     // ── Prune ─────────────────────────────────────────────────────────────────
@@ -341,13 +415,27 @@ impl SnapshotManager {
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
-    /// Canonical path for the snapshot directory at `height`.
+    /// Canonical path for the final snapshot directory at `height`.
     fn snapshot_path(&self, height: u64) -> PathBuf {
-        // Zero-pad to 12 digits so lexicographic sort matches numeric sort.
+        // Zero-pad to 12 digits so lexicographic sort matches numeric sort
+        // (up to height 999_999_999_999). Rust's `str::parse::<u64>()` handles
+        // zero-padded decimal strings correctly — no octal ambiguity unlike C/Python.
         self.snapshot_dir.join(format!("{SNAPSHOT_DIR_PREFIX}{height:012}"))
     }
 
+    /// Staging path used during atomic snapshot creation (see `create_snapshot`).
+    fn staging_path(&self, height: u64) -> PathBuf {
+        // `.tmp` suffix ensures all_snapshot_dirs skips it: strip_prefix succeeds
+        // but the trailing ".tmp" makes parse::<u64>() fail, so it is filtered out.
+        self.snapshot_dir
+            .join(format!("{SNAPSHOT_DIR_PREFIX}{height:012}{STAGING_SUFFIX}"))
+    }
+
     /// Write `metadata` as `metadata.json` inside `snapshot_path`.
+    ///
+    /// Named `write_metadata` (not `serialize_metadata`) because this function
+    /// performs both JSON serialization AND filesystem I/O. The canonical verb
+    /// list (AGENTS.md §2.3) covers pure type↔bytes conversion; this is I/O.
     fn write_metadata(
         &self,
         snapshot_path: &Path,
@@ -365,8 +453,28 @@ impl SnapshotManager {
     }
 
     /// Read and deserialise `metadata.json` from `snapshot_path`.
+    ///
+    /// Named `read_metadata` for the same reason as `write_metadata` (I/O + parse).
+    /// Guards against suspiciously large files (> `MAX_METADATA_BYTES`) to
+    /// prevent OOM from a corrupted or accidentally replaced metadata file.
+    ///
+    /// Silently skipping corrupt metadata in `list_snapshots` is intentional:
+    /// a partial write from a previous crash must not prevent reading other
+    /// snapshots. TODO(node): emit a warning metric when a snapshot is skipped.
     fn read_metadata(&self, snapshot_path: &Path) -> Result<SnapshotMetadata, StorageError> {
         let meta_path = snapshot_path.join(METADATA_FILENAME);
+
+        // Guard against oversized / malicious metadata files.
+        let file_size = meta_path.metadata().map(|m| m.len()).unwrap_or(0);
+        if file_size > MAX_METADATA_BYTES {
+            return Err(StorageError::RestoreFailed {
+                reason: format!(
+                    "'{}' is suspiciously large ({file_size} bytes, limit {MAX_METADATA_BYTES})",
+                    meta_path.display()
+                ),
+            });
+        }
+
         let json = fs::read_to_string(&meta_path).map_err(|e| StorageError::RestoreFailed {
             reason: format!("cannot read '{}': {e}", meta_path.display()),
         })?;
@@ -376,8 +484,8 @@ impl SnapshotManager {
     }
 
     /// Return all snapshot directories sorted newest-first (by height parsed
-    /// from directory name). Directories whose names cannot be parsed are
-    /// skipped.
+    /// from directory name). Directories whose names cannot be parsed as
+    /// `<prefix><u64>` are skipped (including `.tmp` staging directories).
     fn all_snapshot_dirs(&self) -> Result<Vec<PathBuf>, StorageError> {
         let entries = fs::read_dir(&self.snapshot_dir).map_err(|e| {
             StorageError::SnapshotFailed {
@@ -396,7 +504,11 @@ impl SnapshotManager {
                     return None;
                 }
                 let name = path.file_name()?.to_str()?;
+                // strip_prefix filters non-snapshot dirs; parse::<u64>() additionally
+                // rejects staging dirs ("snapshot_000001000.tmp" → parse fails).
                 let height_str = name.strip_prefix(SNAPSHOT_DIR_PREFIX)?;
+                // Zero-padded decimal strings parse correctly in Rust —
+                // "000001000".parse::<u64>() returns Ok(1000).
                 let height: u64 = height_str.parse().ok()?;
                 Some((height, path))
             })

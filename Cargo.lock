@@ -662,10 +662,12 @@ name = "lemma-storage"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "hex",
  "lemma-core",
  "lemma-crypto",
  "rocksdb",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
 ]
