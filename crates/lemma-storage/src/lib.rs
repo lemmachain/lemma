@@ -20,6 +20,7 @@
 pub mod account;
 pub mod db;
 pub mod error;
+pub mod snapshot;
 pub mod state;
 pub mod trie;
 
@@ -29,5 +30,6 @@ pub use account::Account;
 // Access them via `lemma_storage::db::CF_*` if needed by integration code.
 pub use db::LemmaDb;
 pub use error::StorageError;
+pub use snapshot::{SnapshotManager, SnapshotMetadata};
 pub use state::WorldState;
 pub use trie::{MerklePatriciaTrie, MerkleProof, NibblePath, ProofNode, TrieNode};

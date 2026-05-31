@@ -33,7 +33,9 @@
 
 use std::path::Path;
 
-use rocksdb::{AsColumnFamilyRef, ColumnFamilyDescriptor, Options, WriteBatch, DB};
+use rocksdb::{
+    checkpoint::Checkpoint, AsColumnFamilyRef, ColumnFamilyDescriptor, Options, WriteBatch, DB,
+};
 
 use crate::StorageError;
 
@@ -301,6 +303,35 @@ impl LemmaDb {
     /// Returns [`StorageError::BatchFailed`] on commit failure.
     pub fn write_batch(&self, batch: WriteBatch) -> Result<(), StorageError> {
         self.db.write(batch).map_err(StorageError::batch_failed)
+    }
+
+    // ── Checkpoint ────────────────────────────────────────────────────────────
+
+    /// Create a RocksDB checkpoint (point-in-time physical copy) at `path`.
+    ///
+    /// Uses RocksDB's checkpoint mechanism, which hard-links SST files into
+    /// `path` — the operation is nearly instant and storage-efficient. The
+    /// resulting directory is a complete, openable RocksDB database.
+    ///
+    /// Used by [`SnapshotManager`] to create crash-recovery snapshots at
+    /// epoch boundaries. Do not call this directly; use the snapshot module.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::SnapshotFailed`] if RocksDB fails to create
+    /// the checkpoint (e.g. `path` already exists, insufficient disk space,
+    /// or filesystem doesn't support hard links).
+    ///
+    /// [`SnapshotManager`]: crate::snapshot::SnapshotManager
+    pub fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), StorageError> {
+        let checkpoint = Checkpoint::new(&self.db).map_err(|e| StorageError::SnapshotFailed {
+            reason: format!("failed to create checkpoint object: {e}"),
+        })?;
+        checkpoint
+            .create_checkpoint(path)
+            .map_err(|e| StorageError::SnapshotFailed {
+                reason: format!("failed to write checkpoint: {e}"),
+            })
     }
 }
 
