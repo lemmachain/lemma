@@ -52,6 +52,9 @@ use crate::{
 // Same `large_enum_variant` justification as `TrieNode`: Branch holds
 // [Option<Hash>; 16] (552 bytes) by design. Boxing changes the bincode layout
 // and would break `ProofNode::hash()` parity with `TrieNode::hash()`.
+// `#[non_exhaustive]` allows adding proof variants (e.g. Compact) without a
+// semver break. Internal exhaustive matching still works within this crate.
+#[non_exhaustive]
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProofNode {
@@ -75,7 +78,8 @@ pub enum ProofNode {
     },
     /// A terminal leaf node.
     Leaf {
-        /// The remaining nibble path for this leaf (relative to the root).
+        /// The remaining nibble path for this leaf (from this node's depth
+        /// to the key end — NOT the full path from the root).
         path: NibblePath,
         /// The value stored at this leaf.
         value: Vec<u8>,
@@ -234,7 +238,9 @@ impl MerkleProof {
             depths.push(d);
             hashes.push(node.hash()?);
             d += match node {
+                // Branch routes on one nibble — depth advances by 1.
                 ProofNode::Branch { .. } => 1,
+                // Extension compresses prefix.len() nibbles — depth advances accordingly.
                 ProofNode::Extension { prefix, .. } => prefix.len(),
                 // Leaf is always terminal; no next node uses its depth.
                 ProofNode::Leaf { .. } => 0,
@@ -330,8 +336,14 @@ impl MerkleProof {
                 }
             }
             // Inclusion via Branch value: path was exhausted at the branch.
-            // The branch's `value` field must hold the claimed value.
+            // CORR-2 / SEC-2: Also verify the path is actually exhausted here.
+            // If remaining is non-empty, the Branch is not the correct terminal
+            // for inclusion — the proof is forged or truncated.
             (ProofNode::Branch { value: Some(branch_val), .. }, Some(claimed)) => {
+                if !remaining.is_empty() {
+                    // Path not exhausted — Branch value inclusion is invalid here.
+                    return Err(StorageError::InvalidProof { key: key_hex.to_string() });
+                }
                 if branch_val != claimed {
                     return Err(StorageError::InvalidProof { key: key_hex.to_string() });
                 }
@@ -344,13 +356,38 @@ impl MerkleProof {
                     return Err(StorageError::InvalidProof { key: key_hex.to_string() });
                 }
             }
-            // Non-inclusion via Branch: either empty child slot (key diverges)
-            // or path exhausted with no stored value.  Hash chain already
-            // verified the Branch content.
-            (ProofNode::Branch { .. }, None) => {}
+            // Non-inclusion via Branch: either the path is exhausted with no
+            // value stored here, or the child slot at the key's next nibble is
+            // empty.  SEC-2: Verify the specific sub-case explicitly — the hash
+            // chain confirms the Branch content; we verify the claim is coherent.
+            (ProofNode::Branch { value: branch_val, children }, None) => {
+                if remaining.is_empty() {
+                    // Path exhausted — valid only if no value is stored here.
+                    if branch_val.is_some() {
+                        return Err(StorageError::InvalidProof { key: key_hex.to_string() });
+                    }
+                } else {
+                    // Path not exhausted — valid only if the child slot is empty.
+                    let nibble = remaining
+                        .get(0)
+                        .ok_or_else(|| StorageError::InvalidProof { key: key_hex.to_string() })?
+                        as usize;
+                    if children[nibble].is_some() {
+                        // Child exists but was omitted — truncated/forged proof.
+                        return Err(StorageError::InvalidProof { key: key_hex.to_string() });
+                    }
+                }
+            }
             // Non-inclusion via Extension: key's path didn't match the
             // extension prefix — divergence at this point.
-            (ProofNode::Extension { .. }, None) => {}
+            // SEC-1: Verify the key's remaining path does NOT start with the
+            // extension prefix. If it does, the key could exist deeper — the
+            // proof is truncated/forged.
+            (ProofNode::Extension { prefix, .. }, None) => {
+                if remaining.starts_with(prefix) {
+                    return Err(StorageError::InvalidProof { key: key_hex.to_string() });
+                }
+            }
             // All other combos are structurally invalid.
             _ => {
                 return Err(StorageError::InvalidProof { key: key_hex.to_string() });
