@@ -5,7 +5,9 @@ edition = "2021"
 description = "Persistent storage for Lemma: RocksDB wrapper, Merkle Patricia Trie, world state"
 
 [dependencies]
-serde = { workspace = true }
-thiserror = { workspace = true }
-bincode = { workspace = true }
+rocksdb = { workspace = true }
 lemma-core = { path = "../lemma-core" }
+lemma-crypto = { path = "../lemma-crypto" }
+serde = { workspace = true }
+bincode = { workspace = true }
+thiserror = { workspace = true }
