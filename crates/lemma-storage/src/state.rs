@@ -1,0 +1,326 @@
+//! World state — typed account and contract storage access.
+//!
+//! [`WorldState`] is the single entry point for all state reads and writes on
+//! the Lemma chain. It owns a [`LemmaDb`] and tracks the current state trie
+//! root. The VM, consensus, and RPC layers interact with chain state exclusively
+//! through this module.
+//!
+//! ## Account model
+//!
+//! Every address has exactly one [`Account`]. Accounts that have never been
+//! written to are implicitly all-zero (zero balance, zero nonce, `Hash::zero()`
+//! for `code_hash` and `storage_root`). [`WorldState::get_account`] returns
+//! `Ok(None)` for nonexistent addresses; convenience methods like
+//! [`WorldState::get_balance`] return the zero value instead of an error.
+//!
+//! ## Contract storage
+//!
+//! Contract storage slots use the `CF_STORAGE` column family with a 52-byte
+//! composite key: `contract_address (20 bytes) ++ storage_slot (32 bytes)`.
+//! Per-contract storage tries are a Phase 2 concern (VM integration). For
+//! Phase 1, contract storage is written to `CF_STORAGE` directly.
+//!
+//! ## State trie + state root
+//!
+//! Every [`put_account`] call inserts the address → bincode(Account) mapping
+//! into a [`MerklePatriciaTrie`] backed by the `CF_TRIE_NODES` column family.
+//! The trie root after all writes is the `state_root` committed to
+//! [`BlockHeader::state_root`]. Call [`WorldState::commit`] to obtain the
+//! current root for block production.
+//!
+//! ## Block-level batching (Phase 2 note)
+//!
+//! Each [`put_account`] currently commits a single `WriteBatch` covering the
+//! modified trie nodes. True block-level batching (accumulate all writes for
+//! an entire block in one atomic RocksDB write) requires refactoring
+//! [`MerklePatriciaTrie::insert`] to accept an external batch — deferred to
+//! Phase 2 when the VM integration layer is built.
+//!
+//! [`put_account`]: WorldState::put_account
+//! [`BlockHeader::state_root`]: lemma_core::BlockHeader
+
+use lemma_core::{Address, Amount, Hash};
+
+use crate::{
+    account::Account,
+    db::{LemmaDb, CF_STORAGE},
+    trie::{MerklePatriciaTrie, MerkleProof},
+    StorageError,
+};
+
+/// Length of a composite contract-storage key: 20 (address) + 32 (slot).
+const STORAGE_KEY_LEN: usize = 52;
+
+// ─── WorldState ───────────────────────────────────────────────────────────────
+
+/// Typed world-state access over a [`LemmaDb`].
+///
+/// `WorldState` owns the database and tracks the current state trie root.
+/// All account and contract storage reads/writes go through this struct.
+///
+/// ## Lifetime note
+///
+/// [`MerklePatriciaTrie`] borrows `&LemmaDb`, creating a self-referential
+/// lifetime if we stored it as a field. Instead `WorldState` stores only the
+/// root hash and creates short-lived trie instances per operation — no lifetime
+/// gymnastics, no `unsafe`.
+///
+/// ## Thread safety
+///
+/// `WorldState` is **not** `Sync`. Concurrent access from multiple threads
+/// requires an `Arc<RwLock<WorldState>>` on the caller side
+/// (see `04-BUILD_GUIDE.md §10`).
+pub struct WorldState {
+    /// The underlying RocksDB database. Owned by `WorldState` so the trie can
+    /// borrow from it without lifetime issues.
+    db: LemmaDb,
+    /// Current state trie root. `None` for a fresh (empty) state.
+    state_root: Option<Hash>,
+}
+
+impl WorldState {
+    // ── Construction ──────────────────────────────────────────────────────────
+
+    /// Create a new empty world state backed by `db`.
+    ///
+    /// The state trie starts empty (`state_root = None`). Use this for genesis
+    /// block construction or unit tests.
+    pub fn new(db: LemmaDb) -> Self {
+        Self { db, state_root: None }
+    }
+
+    /// Resume world state from a persisted `state_root`.
+    ///
+    /// Used when loading an existing chain from disk. The root hash must
+    /// correspond to trie nodes already present in the `trie_nodes` column
+    /// family — if not, the first account read will return
+    /// [`StorageError::TrieNodeNotFound`].
+    pub fn with_state_root(db: LemmaDb, state_root: Hash) -> Self {
+        Self { db, state_root: Some(state_root) }
+    }
+
+    // ── State root ────────────────────────────────────────────────────────────
+
+    /// The current state trie root, or `None` if no accounts have been written.
+    ///
+    /// This value becomes [`BlockHeader::state_root`] at block commit time.
+    /// Call [`commit`] to obtain it explicitly after a batch of writes.
+    ///
+    /// [`BlockHeader::state_root`]: lemma_core::BlockHeader
+    /// [`commit`]: WorldState::commit
+    pub fn state_root(&self) -> Option<Hash> {
+        self.state_root
+    }
+
+    /// Finalise a block's state changes and return the state root.
+    ///
+    /// For Phase 1 this simply returns [`state_root`]. In Phase 2, this will
+    /// flush the accumulated write batch to RocksDB atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::InvalidProof`] if the trie is empty (no accounts
+    /// written yet — the caller should not commit an empty block, but this is
+    /// not enforced here).
+    ///
+    /// [`state_root`]: WorldState::state_root
+    pub fn commit(&self) -> Result<Hash, StorageError> {
+        self.state_root.ok_or(StorageError::InvalidProof {
+            key: "(empty state — no accounts written)".to_string(),
+        })
+    }
+
+    // ── Account CRUD ──────────────────────────────────────────────────────────
+
+    /// Look up the account at `address`.
+    ///
+    /// Returns `Ok(None)` if the address has never been written. Callers that
+    /// require an account to exist (e.g. transaction validation) should convert
+    /// `None` to [`StorageError::AccountNotFound`] using `.ok_or_else(...)`.
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::TrieNodeNotFound`] — trie corruption or wrong root.
+    /// - [`StorageError::SerializationFailed`] — bincode decode failed.
+    pub fn get_account(&self, address: &Address) -> Result<Option<Account>, StorageError> {
+        let Some(root) = self.state_root else {
+            // Empty trie — every address is implicitly absent.
+            return Ok(None);
+        };
+        let trie = MerklePatriciaTrie::with_root(&self.db, root);
+        let Some(bytes) = trie.get(address.as_bytes())? else {
+            return Ok(None);
+        };
+        let account = bincode::deserialize(&bytes)?;
+        Ok(Some(account))
+    }
+
+    /// Insert or update the account at `address`.
+    ///
+    /// Serialises `account` with bincode, inserts the key-value pair into the
+    /// state trie, and updates [`state_root`] to the new trie root.
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::SerializationFailed`] — bincode encode failed.
+    /// - [`StorageError::BatchFailed`] — RocksDB commit failed.
+    ///
+    /// [`state_root`]: WorldState::state_root
+    pub fn put_account(
+        &mut self,
+        address: &Address,
+        account: &Account,
+    ) -> Result<(), StorageError> {
+        let bytes = bincode::serialize(account)?;
+        let mut trie = self.trie_mut();
+        trie.insert(address.as_bytes(), bytes)?;
+        self.state_root = trie.root();
+        Ok(())
+    }
+
+    // ── Account convenience ───────────────────────────────────────────────────
+
+    /// Return the liquid LEM balance of `address`, or [`Amount::zero()`] if
+    /// the account does not exist.
+    ///
+    /// Uses `available_balance()` is NOT used here — this returns `balance`
+    /// only (the liquid portion). Use [`get_account`] + [`Account::available_balance`]
+    /// if you need the spendable balance after staked amounts.
+    ///
+    /// [`get_account`]: WorldState::get_account
+    pub fn get_balance(&self, address: &Address) -> Result<Amount, StorageError> {
+        Ok(self.get_account(address)?.map_or(Amount::zero(), |a| a.balance))
+    }
+
+    /// Return the transaction nonce of `address`, or `0` if the account does
+    /// not exist.
+    pub fn get_nonce(&self, address: &Address) -> Result<u64, StorageError> {
+        Ok(self.get_account(address)?.map_or(0, |a| a.nonce))
+    }
+
+    /// Increment the nonce of `address` by one.
+    ///
+    /// If the account does not exist, creates a default (zero-balance, zero
+    /// code) account with `nonce = 1`.
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::SerializationFailed`] — bincode encode/decode failed.
+    /// - [`StorageError::BatchFailed`] — RocksDB commit failed.
+    pub fn increment_nonce(&mut self, address: &Address) -> Result<(), StorageError> {
+        let mut account = self.get_account(address)?.unwrap_or_default();
+        account.nonce = account.nonce.saturating_add(1);
+        self.put_account(address, &account)
+    }
+
+    // ── Contract storage ──────────────────────────────────────────────────────
+
+    /// Read a contract storage slot.
+    ///
+    /// The slot is identified by `address` (20 bytes) + `slot` (32 bytes),
+    /// stored in the `CF_STORAGE` column family with a 52-byte composite key.
+    ///
+    /// Returns `Ok(None)` if the slot has never been written.
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::Database`] — RocksDB read failed.
+    pub fn get_storage(
+        &self,
+        address: &Address,
+        slot: &Hash,
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        let key = storage_key(address, slot);
+        self.db.get(CF_STORAGE, &key)
+    }
+
+    /// Write a value to a contract storage slot.
+    ///
+    /// The value is stored raw (no serialization) in `CF_STORAGE`.
+    /// Writing an empty `value` is valid (not the same as deletion — use
+    /// [`delete_storage`] to remove a slot).
+    ///
+    /// [`delete_storage`]: WorldState::delete_storage
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::BatchFailed`] — RocksDB write failed.
+    pub fn put_storage(
+        &mut self,
+        address: &Address,
+        slot: &Hash,
+        value: Vec<u8>,
+    ) -> Result<(), StorageError> {
+        let key = storage_key(address, slot);
+        self.db.put(CF_STORAGE, &key, &value)
+    }
+
+    /// Delete a contract storage slot.
+    ///
+    /// After deletion, [`get_storage`] returns `Ok(None)` for this slot.
+    ///
+    /// [`get_storage`]: WorldState::get_storage
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::Database`] — RocksDB delete failed.
+    pub fn delete_storage(
+        &mut self,
+        address: &Address,
+        slot: &Hash,
+    ) -> Result<(), StorageError> {
+        let key = storage_key(address, slot);
+        self.db.delete(CF_STORAGE, &key)
+    }
+
+    // ── Proof ─────────────────────────────────────────────────────────────────
+
+    /// Generate a Merkle proof for the account at `address`.
+    ///
+    /// Returns an **inclusion proof** if the account exists, or a
+    /// **non-inclusion proof** if it does not. The proof can be verified
+    /// offline via [`MerkleProof::verify`].
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::InvalidProof`] — state is empty (no state root yet).
+    /// - [`StorageError::TrieNodeNotFound`] — trie corruption.
+    pub fn generate_account_proof(
+        &self,
+        address: &Address,
+    ) -> Result<MerkleProof, StorageError> {
+        let root = self.state_root.ok_or(StorageError::InvalidProof {
+            key: hex::encode(address.as_bytes()),
+        })?;
+        let trie = MerklePatriciaTrie::with_root(&self.db, root);
+        trie.generate_proof(address.as_bytes())
+    }
+
+    // ── Private helpers ───────────────────────────────────────────────────────
+
+    /// Create a mutable trie instance rooted at the current state root.
+    ///
+    /// If `state_root` is `None` (empty state), creates a fresh empty trie.
+    fn trie_mut(&self) -> MerklePatriciaTrie<'_> {
+        match self.state_root {
+            Some(root) => MerklePatriciaTrie::with_root(&self.db, root),
+            None => MerklePatriciaTrie::new(&self.db),
+        }
+    }
+}
+
+// ─── Key helpers ──────────────────────────────────────────────────────────────
+
+/// Build the 52-byte composite key for a contract storage slot.
+///
+/// Layout: `address (20 bytes) ++ slot (32 bytes)`.
+/// This matches the `CF_STORAGE` column family key format defined in `db.rs`.
+fn storage_key(address: &Address, slot: &Hash) -> [u8; STORAGE_KEY_LEN] {
+    let mut key = [0u8; STORAGE_KEY_LEN];
+    key[..20].copy_from_slice(address.as_bytes());
+    key[20..].copy_from_slice(slot.as_bytes());
+    key
+}
+
+#[cfg(test)]
+mod tests;

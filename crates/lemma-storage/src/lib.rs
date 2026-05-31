@@ -20,6 +20,7 @@
 pub mod account;
 pub mod db;
 pub mod error;
+pub mod state;
 pub mod trie;
 
 pub use account::Account;
@@ -28,4 +29,5 @@ pub use db::{
     CF_TRANSACTIONS, CF_TRIE_NODES,
 };
 pub use error::StorageError;
+pub use state::WorldState;
 pub use trie::{MerklePatriciaTrie, MerkleProof, NibblePath, ProofNode, TrieNode};
