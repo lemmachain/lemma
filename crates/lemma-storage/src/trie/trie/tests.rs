@@ -7,7 +7,7 @@
 use tempfile::tempdir;
 
 use super::*;
-use crate::db::LemmaDb;
+use crate::{db::LemmaDb, StorageError};
 
 // ── Shared fixtures ───────────────────────────────────────────────────────────
 
@@ -217,7 +217,7 @@ fn insert_and_get_32_byte_key() {
 fn two_32_byte_keys_differing_at_last_byte_both_retrievable() {
     let (db, _dir) = open_temp_db();
     let mut t = trie(&db);
-    let mut key_a = [0xABu8; 32];
+    let key_a = [0xABu8; 32];
     let mut key_b = [0xABu8; 32];
     key_b[31] = 0xCD;
     t.insert(&key_a, b"val_a".to_vec()).unwrap();
@@ -284,6 +284,117 @@ fn with_root_root_matches_saved() {
 
     let t2 = MerklePatriciaTrie::with_root(&db, saved);
     assert_eq!(t2.root(), Some(saved));
+}
+
+// ── C-2: Insertion-order determinism (CRITICAL for consensus) ─────────────────
+
+#[test]
+fn root_is_independent_of_insertion_order() {
+    // The same key-value set MUST produce the same root hash regardless of
+    // insertion order. This is the fundamental consensus guarantee of the MPT.
+    let (db1, _dir1) = open_temp_db();
+    let mut t1 = trie(&db1);
+    t1.insert(b"key1", b"val1".to_vec()).unwrap();
+    t1.insert(b"key2", b"val2".to_vec()).unwrap();
+    t1.insert(b"key3", b"val3".to_vec()).unwrap();
+
+    let (db2, _dir2) = open_temp_db();
+    let mut t2 = trie(&db2);
+    t2.insert(b"key3", b"val3".to_vec()).unwrap();
+    t2.insert(b"key2", b"val2".to_vec()).unwrap();
+    t2.insert(b"key1", b"val1".to_vec()).unwrap();
+
+    assert_eq!(
+        t1.root(), t2.root(),
+        "trie root must be independent of insertion order",
+    );
+}
+
+#[test]
+fn root_is_independent_of_insertion_order_prefix_keys() {
+    // Prefix key pairs: "ab" before "abc" vs "abc" before "ab".
+    let (db1, _dir1) = open_temp_db();
+    let mut t1 = trie(&db1);
+    t1.insert(b"ab", b"short".to_vec()).unwrap();
+    t1.insert(b"abc", b"long".to_vec()).unwrap();
+
+    let (db2, _dir2) = open_temp_db();
+    let mut t2 = trie(&db2);
+    t2.insert(b"abc", b"long".to_vec()).unwrap();
+    t2.insert(b"ab", b"short".to_vec()).unwrap();
+
+    assert_eq!(
+        t1.root(), t2.root(),
+        "insertion order must not affect root for prefix-key pairs",
+    );
+}
+
+// ── W-3: with_root with nonexistent hash ──────────────────────────────────────
+
+#[test]
+fn with_root_nonexistent_hash_returns_trie_node_not_found_on_get() {
+    let (db, _dir) = open_temp_db();
+    let fake_root = lemma_core::Hash::from_bytes([0xDE; 32]);
+    let t = MerklePatriciaTrie::with_root(&db, fake_root);
+    let err = t.get(b"any_key").unwrap_err();
+    assert!(
+        matches!(err, StorageError::TrieNodeNotFound { .. }),
+        "expected TrieNodeNotFound, got: {err:?}",
+    );
+}
+
+// ── W-5: Extension split structural test ─────────────────────────────────────
+
+#[test]
+fn extension_split_inserts_third_key_at_branch_value() {
+    // "abcdefgh" and "abcdefgx" create Extension+Branch.
+    // Then "abcdefg" (exact common prefix) inserts a branch value.
+    // All three must be retrievable.
+    let (db, _dir) = open_temp_db();
+    let mut t = trie(&db);
+    t.insert(b"abcdefgh", b"val_h".to_vec()).unwrap();
+    t.insert(b"abcdefgx", b"val_x".to_vec()).unwrap();
+    t.insert(b"abcdefg",  b"prefix_val".to_vec()).unwrap();
+    assert_eq!(t.get(b"abcdefgh").unwrap(), Some(b"val_h".to_vec()));
+    assert_eq!(t.get(b"abcdefgx").unwrap(), Some(b"val_x".to_vec()));
+    assert_eq!(t.get(b"abcdefg").unwrap(),  Some(b"prefix_val".to_vec()));
+}
+
+#[test]
+fn extension_split_then_diverge_within_prefix() {
+    // "abcdefg_a" and "abcdefg_b" share prefix "abcdefg_" (8 bytes = 16 nibbles).
+    // Then insert "abcde" which diverges in the middle of the extension prefix.
+    let (db, _dir) = open_temp_db();
+    let mut t = trie(&db);
+    t.insert(b"abcdefg_a", b"val1".to_vec()).unwrap();
+    t.insert(b"abcdefg_b", b"val2".to_vec()).unwrap();
+    t.insert(b"abcde",     b"val3".to_vec()).unwrap();
+    assert_eq!(t.get(b"abcdefg_a").unwrap(), Some(b"val1".to_vec()));
+    assert_eq!(t.get(b"abcdefg_b").unwrap(), Some(b"val2".to_vec()));
+    assert_eq!(t.get(b"abcde").unwrap(),     Some(b"val3".to_vec()));
+}
+
+// ── W-6: Multi-level nesting ──────────────────────────────────────────────────
+
+#[test]
+fn deep_nesting_three_levels_all_retrievable() {
+    // Build a trie with keys that force Extension → Branch → Extension → Leaf.
+    let (db, _dir) = open_temp_db();
+    let mut t = trie(&db);
+    // All share "lem1q" prefix, then diverge.
+    t.insert(b"lem1qaaabbbccc111", b"acc1".to_vec()).unwrap();
+    t.insert(b"lem1qaaabbbccc222", b"acc2".to_vec()).unwrap();
+    t.insert(b"lem1qaaaxxx",       b"acc3".to_vec()).unwrap();
+    t.insert(b"lem1qzzz",          b"acc4".to_vec()).unwrap();
+    t.insert(b"lem1q",             b"root_acc".to_vec()).unwrap();
+
+    assert_eq!(t.get(b"lem1qaaabbbccc111").unwrap(), Some(b"acc1".to_vec()));
+    assert_eq!(t.get(b"lem1qaaabbbccc222").unwrap(), Some(b"acc2".to_vec()));
+    assert_eq!(t.get(b"lem1qaaaxxx").unwrap(),       Some(b"acc3".to_vec()));
+    assert_eq!(t.get(b"lem1qzzz").unwrap(),          Some(b"acc4".to_vec()));
+    assert_eq!(t.get(b"lem1q").unwrap(),             Some(b"root_acc".to_vec()));
+    // Non-inserted keys must still return None.
+    assert_eq!(t.get(b"lem1qaaa").unwrap(), None);
 }
 
 // ── Large value ───────────────────────────────────────────────────────────────

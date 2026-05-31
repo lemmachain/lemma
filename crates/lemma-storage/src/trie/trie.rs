@@ -51,7 +51,14 @@ use crate::{
 /// Tied to a `&'db LemmaDb` lifetime: the trie does not own the database.
 /// `WorldState` (Step 7) owns the `LemmaDb` and passes references to tries.
 ///
+/// ## Not yet implemented
+///
+/// - `delete(key)` — Step 6 or later. [`TrieNode::child_count`] is already
+///   implemented to support branch collapsing on delete.
+/// - `contains(key)` — can be implemented as `get(key).map(|v| v.is_some())`.
+///
 /// [`root`]: MerklePatriciaTrie::root
+/// [`TrieNode::child_count`]: crate::trie::node::TrieNode::child_count
 pub struct MerklePatriciaTrie<'db> {
     db: &'db LemmaDb,
     root: Option<Hash>,
@@ -68,7 +75,16 @@ impl<'db> MerklePatriciaTrie<'db> {
     /// Used when resuming a trie from a persisted state root (e.g. from
     /// [`BlockHeader::state_root`]).
     ///
+    /// # Error behavior
+    ///
+    /// This constructor does **not** validate that `root` exists in `db`.
+    /// The first call to [`get`] or [`insert`] will return
+    /// [`StorageError::TrieNodeNotFound`] if `root` is not present in the
+    /// `trie_nodes` column family (e.g. DB corruption or wrong hash).
+    ///
     /// [`BlockHeader::state_root`]: lemma_core::BlockHeader::state_root
+    /// [`get`]: MerklePatriciaTrie::get
+    /// [`insert`]: MerklePatriciaTrie::insert
     pub fn with_root(db: &'db LemmaDb, root: Hash) -> Self {
         Self { db, root: Some(root) }
     }
@@ -161,7 +177,10 @@ impl<'db> MerklePatriciaTrie<'db> {
                 if path.is_empty() {
                     Ok(bv)
                 } else {
-                    let nibble = path.get(0).unwrap() as usize;
+                    // path is non-empty: guarded by is_empty() check above.
+                    let nibble = path
+                        .get(0)
+                        .expect("path non-empty: guarded by is_empty() check") as usize;
                     self.get_recursive(children[nibble], path.skip(1))
                 }
             }
@@ -208,7 +227,10 @@ impl<'db> MerklePatriciaTrie<'db> {
             // Key terminates at this branch — update the branch value.
             return self.store_node(batch, &TrieNode::Branch { children, value: Some(value) });
         }
-        let nibble = path.get(0).unwrap() as usize;
+        // path is non-empty: guarded by is_empty() check above.
+        let nibble = path
+            .get(0)
+            .expect("path non-empty: guarded by is_empty() check") as usize;
         let new_child = self.insert_recursive(batch, children[nibble], path.skip(1), value)?;
         children[nibble] = Some(new_child);
         self.store_node(batch, &TrieNode::Branch { children, value: branch_value })
@@ -226,14 +248,21 @@ impl<'db> MerklePatriciaTrie<'db> {
     ) -> Result<Hash, StorageError> {
         let common = path.common_prefix_len(&prefix);
         if common == prefix.len() {
-            // Path consumes the entire extension — recurse into its child.
+            // The entire extension prefix is consumed by `path`. Recurse into the
+            // child with the remaining path, then re-wrap with the same Extension
+            // prefix — the Extension node is structurally unchanged; only its
+            // child hash may point to a new/updated subtree.
             let nc = self.insert_recursive(batch, Some(child), path.skip(common), new_value)?;
             return self.store_node(batch, &TrieNode::extension(prefix, nc));
         }
         // Path diverges inside the prefix — split the extension at `common`.
         let branch_hash = self.split_extension(batch, &prefix, child, &path, new_value, common)?;
         if common > 0 {
-            let ext = TrieNode::extension(path.take(common), branch_hash);
+            // Use the existing prefix for the new Extension — not `path`.
+            // Both share the same first `common` nibbles by definition of
+            // `common_prefix_len`, but using `prefix` is semantically correct:
+            // the Extension encodes the existing trie structure, not the new key.
+            let ext = TrieNode::extension(prefix.take(common), branch_hash);
             self.store_node(batch, &ext)
         } else {
             Ok(branch_hash)
@@ -251,7 +280,11 @@ impl<'db> MerklePatriciaTrie<'db> {
         common: usize,
     ) -> Result<Hash, StorageError> {
         let mut branch = TrieNode::empty_branch();
-        let ext_nibble = prefix.get(common).unwrap() as usize;
+        // Precondition: `common < prefix.len()` is guaranteed by the caller
+        // (`insert_at_extension` returns early when `common == prefix.len()`).
+        let ext_nibble = prefix
+            .get(common)
+            .expect("split_extension: common < prefix.len() guaranteed by caller") as usize;
         // Remaining extension tail (if the prefix was longer than 1 nibble past `common`).
         if common + 1 < prefix.len() {
             let sub = TrieNode::extension(prefix.skip(common + 1), child);
@@ -266,7 +299,10 @@ impl<'db> MerklePatriciaTrie<'db> {
                 *value = Some(new_value);
             }
         } else {
-            let n = path.get(common).unwrap() as usize;
+            // path.len() != common is guaranteed by the outer if-else.
+            let n = path
+                .get(common)
+                .expect("split_extension: path.len() > common guaranteed by if-else") as usize;
             let leaf = TrieNode::leaf(path.skip(common + 1), new_value);
             let lh = self.store_node(batch, &leaf)?;
             branch.set_child(n, lh);
@@ -290,11 +326,15 @@ impl<'db> MerklePatriciaTrie<'db> {
             return self.store_node(batch, &TrieNode::leaf(leaf_path, new_value));
         }
         // Paths diverge — build a branch (wrapped in an extension if common > 0).
+        // Capture the shared prefix BEFORE moving leaf_path into build_diverging_branch.
+        // Use leaf_path (the existing path) for the Extension — not new_path. Both share
+        // the same first `common` nibbles by definition, but the existing path is canonical.
+        let shared_prefix = leaf_path.take(common);
         let bh = self.build_diverging_branch(
             batch, leaf_path, leaf_value, &new_path, new_value, common,
         )?;
         if common > 0 {
-            let ext = TrieNode::extension(new_path.take(common), bh);
+            let ext = TrieNode::extension(shared_prefix, bh);
             self.store_node(batch, &ext)
         } else {
             Ok(bh)
@@ -318,7 +358,10 @@ impl<'db> MerklePatriciaTrie<'db> {
                 *value = Some(leaf_value);
             }
         } else {
-            let n = leaf_path.get(common).unwrap() as usize;
+            // leaf_path.len() != common guaranteed by the outer if-else.
+            let n = leaf_path
+                .get(common)
+                .expect("build_diverging_branch: leaf_path.len() > common guaranteed") as usize;
             let leaf = TrieNode::leaf(leaf_path.skip(common + 1), leaf_value);
             branch.set_child(n, self.store_node(batch, &leaf)?);
         }
@@ -328,7 +371,10 @@ impl<'db> MerklePatriciaTrie<'db> {
                 *value = Some(new_value);
             }
         } else {
-            let n = new_path.get(common).unwrap() as usize;
+            // new_path.len() != common guaranteed by the outer if-else.
+            let n = new_path
+                .get(common)
+                .expect("build_diverging_branch: new_path.len() > common guaranteed") as usize;
             let leaf = TrieNode::leaf(new_path.skip(common + 1), new_value);
             branch.set_child(n, self.store_node(batch, &leaf)?);
         }

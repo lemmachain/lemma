@@ -22,8 +22,10 @@
 //!
 //! ## Performance
 //!
-//! All trie writes must be batched per block (BUILD_GUIDE §10, AGENTS.md §16.2).
-//! Never commit a single trie node to RocksDB in isolation.
+//! Each [`MerklePatriciaTrie::insert`] commits one `WriteBatch` covering all
+//! nodes for that key-value pair (node-level atomicity). Block-level batching
+//! (one RocksDB write per block across all trie inserts) will be added in
+//! `WorldState` (Step 7). See `trie.rs` module doc for details.
 //!
 //! [`BlockHeader`]: lemma_core::BlockHeader
 
