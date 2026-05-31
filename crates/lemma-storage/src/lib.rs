@@ -28,4 +28,4 @@ pub use db::{
     CF_TRANSACTIONS, CF_TRIE_NODES,
 };
 pub use error::StorageError;
-pub use trie::{NibblePath, TrieNode};
+pub use trie::{MerklePatriciaTrie, NibblePath, TrieNode};

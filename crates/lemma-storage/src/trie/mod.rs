@@ -28,5 +28,7 @@
 //! [`BlockHeader`]: lemma_core::BlockHeader
 
 pub mod node;
+pub mod trie;
 
 pub use node::{NibblePath, TrieNode};
+pub use trie::MerklePatriciaTrie;
