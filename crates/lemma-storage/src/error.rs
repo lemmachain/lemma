@@ -176,11 +176,38 @@ pub enum StorageError {
 
 // ─── From conversions ─────────────────────────────────────────────────────────
 
+// ─── Constructors ─────────────────────────────────────────────────────────────
+
+impl StorageError {
+    /// Wrap a RocksDB error that occurred during a batch write commit.
+    ///
+    /// Use this **instead of** `?` (which would produce [`StorageError::Database`]
+    /// via `From<rocksdb::Error>`) when the failure site is a `WriteBatch::write()`
+    /// call. This keeps `BatchFailed` semantically distinct from general I/O
+    /// failures so callers can differentiate the two error paths.
+    ///
+    /// # Example (in `db.rs`)
+    ///
+    /// ```ignore
+    /// db.write(batch).map_err(StorageError::batch_failed)?;
+    /// ```
+    pub fn batch_failed(e: rocksdb::Error) -> Self {
+        Self::BatchFailed {
+            reason: e.into_string(),
+        }
+    }
+}
+
+// ─── From conversions ─────────────────────────────────────────────────────────
+
 impl From<rocksdb::Error> for StorageError {
     /// Convert a `rocksdb::Error` into [`StorageError::Database`].
     ///
     /// The full `Display` string of the RocksDB error is preserved in
     /// `reason` so the original message is not lost at the boundary.
+    ///
+    /// For batch-write failures, use [`StorageError::batch_failed`] instead
+    /// so the error variant reflects the actual operation that failed.
     fn from(e: rocksdb::Error) -> Self {
         Self::Database {
             reason: e.into_string(),

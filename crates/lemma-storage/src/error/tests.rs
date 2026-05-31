@@ -546,13 +546,15 @@ fn from_bincode_error_produces_serialization_failed_variant() {
 
 #[test]
 fn from_bincode_error_preserves_error_message() {
+    // Capture the message first, then consume the error into StorageError —
+    // one deserialize call, no duplication.
     let bincode_err = bincode::deserialize::<u64>(&[]).unwrap_err();
-    let reason = bincode_err.to_string();
-    let storage_err = StorageError::from(bincode::deserialize::<u64>(&[]).unwrap_err());
+    let expected_reason = bincode_err.to_string();
+    let storage_err = StorageError::from(bincode_err);
     let StorageError::SerializationFailed { reason: stored } = storage_err else {
         panic!("expected SerializationFailed");
     };
-    assert_eq!(stored, reason);
+    assert_eq!(stored, expected_reason);
 }
 
 // ── From<rocksdb::Error> — integration note ───────────────────────────────────
@@ -560,6 +562,8 @@ fn from_bincode_error_preserves_error_message() {
 // `rocksdb::Error` has no public constructor, so From<rocksdb::Error> is
 // tested in db/tests.rs where a real DB open failure produces one naturally
 // (e.g. opening a path that is a regular file, not a directory).
+// TODO(dev): add from_rocksdb_error_produces_database_variant test in
+// db/tests.rs once the RocksDB wrapper exists — issue #3
 
 // ── Cross-variant PartialEq — database group ──────────────────────────────────
 
@@ -632,4 +636,12 @@ fn serialization_failed_and_key_not_found_with_same_string_are_not_equal() {
 fn column_family_not_found_and_key_not_found_are_not_equal() {
     // ColumnFamilyNotFound uses &'static str, KeyNotFound uses String.
     assert_ne!(cf_not_found("state"), key_not_found("state"));
+}
+
+#[test]
+fn column_family_not_found_and_account_not_found_are_not_equal() {
+    // Both are "not found" variants — the most semantically confusing pairing.
+    // ColumnFamilyNotFound (&'static str) must not equal AccountNotFound (String)
+    // even when both hold the same textual content.
+    assert_ne!(cf_not_found("state"), account_not_found("state"));
 }
